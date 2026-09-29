@@ -3,6 +3,21 @@
 All notable changes to `corevisys/laravel-license-client` are documented
 here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-09-29
+
+### Changed
+
+- The `package_version` reported to the licensing server is now resolved at
+  runtime from Composer's installed package metadata
+  (`Composer\InstalledVersions`) instead of being hard-coded, so it always
+  matches the installed release. A leading `v` is stripped, and dev checkouts
+  (`dev-*`) or resolution failures fall back to a stable version constant.
+  No verification, signature, cache, or offline-grace logic was changed.
+
+### Added
+
+- Test asserting the reported `package_version` matches `^\d+\.\d+\.\d+$`.
+
 ## [1.0.0] - 2026-09-29
 
 First stable release. Packagist-ready.

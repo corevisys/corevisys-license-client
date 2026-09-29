@@ -3,6 +3,7 @@
 namespace CoreVisys\License\Services;
 
 use Carbon\Carbon;
+use Composer\InstalledVersions;
 use CoreVisys\License\Contracts\LicenseStorageInterface;
 use CoreVisys\License\DTOs\LicenseResponse;
 use CoreVisys\License\DTOs\LicenseStatus;
@@ -17,6 +18,7 @@ use CoreVisys\License\Exceptions\LicenseServerUnavailableException;
 use CoreVisys\License\Exceptions\SignatureVerificationException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Orchestrates POST /license/check plus the offline-grace fallback.
@@ -30,6 +32,16 @@ use Illuminate\Support\Facades\Log;
  */
 class LicenseVerifier
 {
+    /**
+     * Version reported to the licensing server when the installed package
+     * version cannot be resolved to a stable release (dev-* checkouts, or a
+     * failure while reading Composer's installed package metadata).
+     */
+    private const FALLBACK_VERSION = '1.0.0';
+
+    /** Memoized result of {@see packageVersion()}. */
+    private ?string $resolvedPackageVersion = null;
+
     public function __construct(
         protected ApiRequestHandler $api,
         protected SignedPayloadVerifier $signatureVerifier,
@@ -60,7 +72,7 @@ class LicenseVerifier
                 'ip' => request()?->ip() ?? '127.0.0.1',
                 'fingerprint' => $this->fingerprint->generate(),
                 'cached_license_id' => $cached['license_id'] ?? null,
-                'package_version' => '1.0.0',
+                'package_version' => $this->packageVersion(),
             ]);
 
             $this->signatureVerifier->verify($response);
@@ -255,6 +267,36 @@ class LicenseVerifier
             $status->isSuspended() => Event::dispatch(new LicenseSuspendedEvent($status)),
             default => null,
         };
+    }
+
+    /**
+     * Resolve the installed package version for reporting to the server.
+     *
+     * Reads the Composer runtime version of this package, strips a leading
+     * "v", and memoizes the outcome. Any dev-* checkout, a missing/empty
+     * value, or a failure while reading the installed metadata falls back to
+     * {@see self::FALLBACK_VERSION} so the reported value is always a
+     * stable-looking semver string.
+     */
+    private function packageVersion(): string
+    {
+        if ($this->resolvedPackageVersion !== null) {
+            return $this->resolvedPackageVersion;
+        }
+
+        try {
+            $pretty = InstalledVersions::getPrettyVersion('corevisys/laravel-license-client');
+        } catch (Throwable) {
+            return $this->resolvedPackageVersion = self::FALLBACK_VERSION;
+        }
+
+        if (! is_string($pretty) || $pretty === '' || str_starts_with($pretty, 'dev-')) {
+            return $this->resolvedPackageVersion = self::FALLBACK_VERSION;
+        }
+
+        $normalized = ltrim($pretty, 'vV');
+
+        return $this->resolvedPackageVersion = ($normalized === '' ? self::FALLBACK_VERSION : $normalized);
     }
 
     protected function log(string $level, string $message, ?\Throwable $e = null): void

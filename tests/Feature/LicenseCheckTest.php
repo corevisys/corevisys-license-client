@@ -294,5 +294,32 @@ class LicenseCheckTest extends TestCase
         $this->assertTrue($status->valid);
         $this->assertTrue($status->offline);
     }
+
+    public function test_reported_package_version_is_a_stable_semver_string(): void
+    {
+        $this->seedCache();
+
+        $capturedBody = null;
+
+        Http::fake([
+            '*/api/v1/license/check' => function (\Illuminate\Http\Client\Request $request) use (&$capturedBody) {
+                $capturedBody = $request->data();
+
+                return Http::response($this->signedEnvelope([
+                    'license_id' => 'lic_123',
+                    'status' => 'active',
+                    'product_code' => 'test-product',
+                    'checked_at' => now()->toIso8601String(),
+                ]));
+            },
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertTrue($status->valid);
+        $this->assertIsArray($capturedBody);
+        $this->assertArrayHasKey('package_version', $capturedBody);
+        $this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+$/', (string) $capturedBody['package_version']);
+    }
 }
 
