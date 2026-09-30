@@ -42,6 +42,17 @@ approved Phase 1-4 work and the tests that actually prove it.
   `signature_verification_failed`). Those two labels are code-only: no test in
   this pass asserts them.
 
+### Note — `unknown_key_id` diagnostic label
+
+- `unknown_key_id` can also appear when the signing-key metadata cannot be
+  **resolved** (a cold key cache and/or an unreachable public-key endpoint),
+  not only when the server genuinely reports an unknown key. It is a **log
+  label only**: the returned `LicenseStatus` stays
+  `signature_verification_failed` and the licence stays invalid. Proven by the
+  characterization test
+  `ColdKeyCacheCharacterizationTest::test_cold_key_cache_is_labelled_unknown_key_id_known_limitation`
+  (which passes with the current behaviour).
+
 ### Fixed
 
 - `env()` removed from `src/`: the `cache_fallback_store` presence signal is

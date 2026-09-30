@@ -153,6 +153,13 @@ All logging uses `logging.channel` (default `stack`) and is suppressed when
 | license server unavailable | `error` | Check could not reach the server |
 | signature verification failed | `error` | Signature invalid, unknown `key_id`, or revoked `key_id` (`reason_code` distinguishes them) |
 
+The `reason_code` on a signature-verification failure is a **log label only**;
+the returned `LicenseStatus` stays `signature_verification_failed` and the
+licence stays invalid. `unknown_key_id` does not necessarily mean the server
+reported an unknown key: it can also appear when the signing-key metadata
+cannot be resolved, for example a **cold key cache** and/or an **unreachable
+public-key endpoint**. See `ColdKeyCacheCharacterizationTest`.
+
 Notifications are sent **only** from the scheduled health check
 (`corevisys:license:check`), never from the request path, so a normal request can
 never trigger an alert. They are **opt-in** (`notifications.enabled` defaults to
