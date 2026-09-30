@@ -261,18 +261,13 @@ class LicenseStorage implements LicenseStorageInterface
 
     /**
      * Whether the application explicitly set COREVISYS_LICENSE_CACHE_FALLBACK_STORE.
-     * Reads the raw env only to distinguish "packaged default" from "explicitly
-     * configured" — never to obtain a secret.
+     * Reads the cache-safe config flag derived at config-build time (never an
+     * environment lookup at runtime, which is null once the config is cached) —
+     * the flag is a boolean presence signal, never a secret value.
      */
     protected function hasExplicitFallbackSetting(): bool
     {
-        try {
-            $value = function_exists('env') ? env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') : null;
-
-            return $value !== null && $value !== '';
-        } catch (\Throwable) {
-            return false;
-        }
+        return ($this->config['cache_fallback_store_explicit'] ?? false) === true;
     }
 
     protected function cacheKey(string $productCode): string

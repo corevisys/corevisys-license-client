@@ -29,6 +29,15 @@ $list = static function (mixed $value): array {
     return array_values(array_filter($parts, static fn ($v) => is_string($v) && $v !== ''));
 };
 
+/*
+| Whether the operator actually set the fallback store env var to a non-empty
+| value. Captured HERE, at config-build time, so it survives `config:cache`:
+| once the config is cached, `.env` is not loaded and a runtime env() read
+| would always return null. Consumers read the flag, never the environment.
+*/
+$fallbackStoreExplicit = env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') !== null
+    && env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') !== '';
+
 return [
 
     /*
@@ -223,6 +232,17 @@ return [
     |     mode it MUST differ from cache_store. Set empty to disable the fallback.
     */
     'cache_fallback_store' => $unset(env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE'), 'file'),
+
+    /*
+    | cache_fallback_store_explicit: true only when the operator actually set
+    |   COREVISYS_LICENSE_CACHE_FALLBACK_STORE to a non-empty value. Derived at
+    |   config-build time so it is cacheable — the runtime env() lookup is
+    |   unavailable under `php artisan config:cache`. Consumers use it to tell a
+    |   deliberately configured fallback apart from the packaged default.
+    |   Default: false | Env var: (derived — never read at runtime)
+    |   Production: do not set this key by hand; set the env var instead.
+    */
+    'cache_fallback_store_explicit' => $fallbackStoreExplicit,
 
     /*
     | cache_key: cache-store key holding the signed license payload (cache mode).

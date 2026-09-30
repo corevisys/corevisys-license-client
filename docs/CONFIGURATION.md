@@ -12,7 +12,12 @@ php artisan vendor:publish --tag=corevisys-license-config
 ```
 
 The package is safe under `php artisan config:cache`: every value is read via
-`config()` at runtime, and no `env()` call exists outside the config file.
+`config()` at runtime, and no `env()` call exists outside the config file. Where
+a decision depends on whether an env var was *set* (a presence signal, as opposed
+to its value), that signal is derived into a boolean config key at
+config-build time rather than looked up from the environment at runtime — under
+`config:cache` the environment is not loaded, so a runtime lookup would always be
+null.
 
 ## Policy: secrets
 
@@ -80,6 +85,7 @@ treats it as a secret everywhere it touches:
 | `cache_driver` | `COREVISYS_LICENSE_CACHE_DRIVER` | `database` | `database` (table) or `cache` (store) | `database` is durable; `cache` must use a persistent store. |
 | `cache_store` | `COREVISYS_LICENSE_CACHE_STORE` | `null` | Cache store used in `cache` mode | Set an explicit persistent store. |
 | `cache_fallback_store` | `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` | `file` | Secondary store consulted only when the primary store throws | Must differ from the primary store in `cache` mode. Empty disables the fallback. The packaged default (`file`) is tolerated when it merely coincides with the framework's default cache store; the doctor then warns that the fallback is effectively disabled. |
+| `cache_fallback_store_explicit` | — | `false` | Derived at config-build time: was `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` set to a non-empty value? | Do not set by hand. It is a cache-safe presence signal used to tell a deliberately configured fallback apart from the packaged default; it is never read from the environment at runtime, so it keeps working under `config:cache`. |
 | `cache_key` | — | `corevisys.license.cache` | Cache-store key for the signed payload | Not a secret. |
 | `public_key_cache_key` | — | `corevisys.license.public_key` | Cache-store key for the public key set | Not a secret. |
 | `fingerprint.algorithm` | `COREVISYS_LICENSE_FINGERPRINT_ALGO` | `sha256` | Fingerprint hash | `hmac-sha256` needs the secret below. |

@@ -117,14 +117,10 @@ class LicenseDoctorCommand extends Command
         }
 
         // Only the packaged default is tolerated; an explicit setting that
-        // collides is a hard validation failure reported separately.
-        try {
-            $explicit = env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE');
-        } catch (\Throwable) {
-            $explicit = null;
-        }
-
-        if ($explicit !== null && $explicit !== '') {
+        // collides is a hard validation failure reported separately. The
+        // "explicitly set?" signal is the cache-safe config flag (never a
+        // runtime environment read, which is null once the config is cached).
+        if (($config['cache_fallback_store_explicit'] ?? false) === true) {
             return null;
         }
 

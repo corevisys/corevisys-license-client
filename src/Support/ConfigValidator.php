@@ -180,7 +180,7 @@ final class ConfigValidator
                 // without editing the config. Only a deliberately-set fallback
                 // that matches the primary store is an error.
                 $isPackagedDefault = $fallback === self::PACKAGED_DEFAULT_FALLBACK_STORE
-                    && ! self::hasExplicitFallbackSetting();
+                    && ! self::hasExplicitFallbackSetting($config);
 
                 if (! $isPackagedDefault) {
                     return 'The license cache_fallback_store must differ from the primary cache store when cache_driver is "cache".';
@@ -265,19 +265,16 @@ final class ConfigValidator
     private const PACKAGED_DEFAULT_FALLBACK_STORE = 'file';
 
     /**
-     * Whether the application actually set COREVISYS_LICENSE_CACHE_FALLBACK_STORE.
-     * Reads the raw env only to distinguish "packaged default" from "explicitly
-     * configured" — never to obtain a secret.
+     * Whether the application explicitly set COREVISYS_LICENSE_CACHE_FALLBACK_STORE.
+     * Reads the cache-safe config flag derived at config-build time (never an
+     * environment lookup at runtime, which is null once the config is cached) —
+     * the flag is a boolean presence signal, never a secret value.
+     *
+     * @param  array<string, mixed>  $config
      */
-    private static function hasExplicitFallbackSetting(): bool
+    private static function hasExplicitFallbackSetting(array $config): bool
     {
-        try {
-            $value = function_exists('env') ? env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') : null;
-
-            return $value !== null && $value !== '';
-        } catch (\Throwable) {
-            return false;
-        }
+        return ($config['cache_fallback_store_explicit'] ?? false) === true;
     }
 
     /**
