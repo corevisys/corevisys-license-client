@@ -8,6 +8,27 @@
 $unset = static fn (mixed $value, mixed $default): mixed
     => \CoreVisys\License\Support\ConfigDefaults::normalize($value, $default);
 
+/*
+| Parse a comma-separated env string (or an array) into a clean list of
+| non-empty string values. An empty/unset value yields an empty array so the
+| caller can apply a documented default.
+*/
+$list = static function (mixed $value): array {
+    if ($value === null || $value === '') {
+        return [];
+    }
+    if (is_array($value)) {
+        $parts = $value;
+    } elseif (is_string($value)) {
+        $parts = explode(',', $value);
+    } else {
+        return [];
+    }
+    $parts = array_map(static fn ($v) => is_string($v) ? trim($v) : $v, $parts);
+
+    return array_values(array_filter($parts, static fn ($v) => is_string($v) && $v !== ''));
+};
+
 return [
 
     /*
@@ -327,6 +348,33 @@ return [
     'logging' => [
         'enabled' => env('COREVISYS_LICENSE_LOGGING', true),
         'channel' => env('COREVISYS_LICENSE_LOG_CHANNEL', 'stack'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Failure Notifications
+    |--------------------------------------------------------------------------
+    | Sent ONLY from the scheduled health check (corevisys:license:check) — never
+    | from the verifier, the middleware, or the request path. The Phase 5 spec's
+    | "log_channel" IS `logging.channel` above; there is no separate key.
+    |
+    | notifications.enabled: master switch. Default: false (notifications are
+    |   opt-in; the package only logs until an operator enables them).
+    |   Env: COREVISYS_LICENSE_NOTIFICATIONS
+    | notifications.channels: delivery channels. Allowed: log, mail. No other
+    |   channel (and no third-party notifier) is supported. Default: ['log'].
+    |   Env: COREVISYS_LICENSE_NOTIFICATION_CHANNELS (comma-separated)
+    | notifications.mail_recipients: recipients used when 'mail' is enabled.
+    |   Default: [] (none). Env: COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS
+    | notifications.throttle_interval: seconds between repeated notifications
+    |   for the SAME failure reason_code. Default: 3600.
+    |   Env: COREVISYS_LICENSE_NOTIFICATION_THROTTLE
+    */
+    'notifications' => [
+        'enabled' => env('COREVISYS_LICENSE_NOTIFICATIONS', false),
+        'channels' => ($list(env('COREVISYS_LICENSE_NOTIFICATION_CHANNELS')) ?: ['log']),
+        'mail_recipients' => $list(env('COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS')),
+        'throttle_interval' => env('COREVISYS_LICENSE_NOTIFICATION_THROTTLE', 3600),
     ],
 
 ];

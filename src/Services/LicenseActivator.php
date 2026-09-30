@@ -75,6 +75,14 @@ class LicenseActivator
                 'last_error_message' => null,
             ]);
 
+            // Structured success log (context only — never the raw key).
+            $this->log('info', 'CoreVisys license: activated successfully.', [
+                'license_id' => $status->licenseId,
+                'product_code' => $this->productCode,
+                'key_id' => $response->keyId,
+                'reason_code' => 'license_activated',
+            ]);
+
             Event::dispatch(new LicenseActivated($status));
 
             return ActivationResult::success($this->safeServerMessage($response->message, $licenseKey) ?? 'License activated successfully.', $status);

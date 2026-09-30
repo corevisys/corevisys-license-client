@@ -27,6 +27,23 @@ final class LogSanitizer
     private const TOKEN_MIN_LENGTH = 24;
 
     /**
+     * Context keys whose string values are structured identifiers / enum codes,
+     * not free-form text, and must never be token-scrubbed. Each is either a
+     * published identifier (key_id), a server-issued id (license_id), a public
+     * product identifier (product_code), or a fixed enum (status, reason_code).
+     * None is the raw license key.
+     */
+    private const SAFE_CONTEXT_KEYS = [
+        'reason_code',
+        'previous_reason_code',
+        'status',
+        'product_code',
+        'key_id',
+        'license_id',
+        'license_type',
+    ];
+
+    /**
      * @param  array<int, string|null>  $knownSecrets  Raw values guaranteed to be sensitive.
      */
     public static function scrubMessage(?string $message, array $knownSecrets = []): string
@@ -58,6 +75,14 @@ final class LogSanitizer
     public static function scrubContext(array $context, array $knownSecrets = []): array
     {
         foreach ($context as $key => $value) {
+            // Structured identifier / enum fields are never secrets, and their
+            // values (e.g. "signature_verification_failed",
+            // "license_server_unavailable") look token-ish, so token-scrubbing
+            // them would erase the very operator signal we need.
+            if (is_string($value) && in_array((string) $key, self::SAFE_CONTEXT_KEYS, true)) {
+                continue;
+            }
+
             if (is_string($value)) {
                 $context[$key] = self::scrubMessage($value, $knownSecrets);
             } elseif (is_array($value)) {

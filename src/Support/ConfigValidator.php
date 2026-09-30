@@ -65,6 +65,8 @@ final class ConfigValidator
             self::gracePeriodError($config),
             self::cacheDriverError($config),
             self::fallbackStoreError($config, $availableCacheStores),
+            self::notificationChannelsError($config),
+            self::notificationThrottleError($config),
         ] as $error) {
             if ($error !== null) {
                 $errors[] = $error;
@@ -184,6 +186,76 @@ final class ConfigValidator
                     return 'The license cache_fallback_store must differ from the primary cache store when cache_driver is "cache".';
                 }
             }
+        }
+
+        return null;
+    }
+
+    /**
+     * Notification channels, when configured, must be a subset of the allowed
+     * set. An empty / absent list is valid (it means "use the default").
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function notificationChannelsError(array $config): ?string
+    {
+        $notifications = $config['notifications'] ?? null;
+
+        if ($notifications === null) {
+            return null; // notifications block absent — nothing to validate
+        }
+
+        if (! is_array($notifications)) {
+            return 'The license notifications configuration must be an array.';
+        }
+
+        $channels = $notifications['channels'] ?? [];
+
+        if (! is_array($channels)) {
+            return 'The license notifications.channels must be an array of channel names.';
+        }
+
+        if ($channels === []) {
+            return null; // empty = default ['log']
+        }
+
+        $allowed = ['log', 'mail'];
+
+        foreach ($channels as $channel) {
+            if (! is_string($channel) || ! in_array($channel, $allowed, true)) {
+                return 'The license notifications.channels may only contain: log, mail.';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The notification throttle interval, when set, must be a non-negative
+     * whole number of seconds. Absent / empty is valid (default applies).
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function notificationThrottleError(array $config): ?string
+    {
+        $notifications = $config['notifications'] ?? null;
+
+        if (! is_array($notifications)) {
+            return null; // reported by the channels check
+        }
+
+        $throttle = $notifications['throttle_interval'] ?? null;
+
+        if ($throttle === null || (is_string($throttle) && trim($throttle) === '')) {
+            return null; // default applies
+        }
+
+        if (! self::isIntegerLike($throttle)) {
+            return 'The license notifications.throttle_interval must be a non-negative whole number of seconds.';
+        }
+
+        if ((int) $throttle < 0) {
+            return 'The license notifications.throttle_interval must not be negative.';
         }
 
         return null;

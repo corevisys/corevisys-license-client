@@ -111,6 +111,10 @@ class LicenseVerifier
         } catch (LicenseServerUnavailableException $e) {
             // Connectivity/rate-limit/5xx failures are transient — these are
             // the only cases allowed to fall back to a still-valid cache.
+            $this->log('error', 'CoreVisys license: license server unavailable.', $e, [
+                'reason_code' => 'license_server_unavailable',
+                'product_code' => $this->productCode,
+            ]);
             Event::dispatch(new LicenseServerUnavailableEvent(null, [
                 'reason_code' => 'license_server_unavailable',
                 'message' => LogSanitizer::scrubMessage($e->getMessage()),
@@ -118,8 +122,8 @@ class LicenseVerifier
 
             return $this->fallbackToCache($cached, $e->getMessage());
         } catch (SignatureVerificationException $e) {
-            $this->log('warning', 'CoreVisys license: signature verification failed.', $e, [
-                'reason_code' => 'signature_verification_failed',
+            $this->log('error', 'CoreVisys license: signature verification failed.', $e, [
+                'reason_code' => $this->signatureFailureReason($e),
             ]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => 'signature_verification_failed']));
 
@@ -596,6 +600,27 @@ class LicenseVerifier
     /**
      * @param  array<string, mixed>  $context
      */
+    /**
+     * Classify a signature-verification failure for the log's reason_code.
+     * The returned LicenseStatus is still the generic
+     * 'signature_verification_failed' (Section A) — only the log context
+     * distinguishes an unknown / revoked key_id for operators.
+     */
+    protected function signatureFailureReason(SignatureVerificationException $e): string
+    {
+        $message = strtolower($e->getMessage());
+
+        if (str_contains($message, 'revoked')) {
+            return 'revoked_key_id';
+        }
+
+        if (str_contains($message, 'public key') || str_contains($message, 'key identifier')) {
+            return 'unknown_key_id';
+        }
+
+        return 'signature_verification_failed';
+    }
+
     protected function log(string $level, string $message, ?\Throwable $e = null, array $context = []): void
     {
         if (! ($this->config['logging']['enabled'] ?? true)) {

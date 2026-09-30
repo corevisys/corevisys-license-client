@@ -9,7 +9,9 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
 > work in this branch may be described as delivering them.
 
 - Phase 5 (logging/monitoring events, scheduled health check, admin
-  notifications with throttling): not approved, not complete.
+  notifications with throttling): implemented on this branch, NOT yet approved
+  by the reviewer. The `[Unreleased]` entries describe the implementation; they
+  are not a claim of delivery until reviewed.
 - Phase 6 (route-enforcement lockout-safety: excluded routes, redirect-loop
   guard, offline-under-outage allow): not approved, not complete.
 - Phase 7 (exhaustive test-gap fill and CI version matrix): not approved, not
@@ -85,6 +87,26 @@ approved Phase 1-4 work and the tests that actually prove it.
 - `CoreVisys\License\Support\LogSanitizer`: scrubs known secrets, email
   addresses, and long opaque tokens from free-form diagnostic text and (deeply)
   from log context arrays before anything is stored or logged.
+- `notifications` config block (`enabled`, `channels`, `mail_recipients`,
+  `throttle_interval`) with env vars `COREVISYS_LICENSE_NOTIFICATIONS`,
+  `COREVISYS_LICENSE_NOTIFICATION_CHANNELS`,
+  `COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS`,
+  `COREVISYS_LICENSE_NOTIFICATION_THROTTLE`. Defaults are safe (disabled,
+  `log`-only, no recipients, 1-hour throttle).
+- `CoreVisys\License\Services\LicenseNotifier` and
+  `CoreVisys\License\Notifications\LicenseFailureNotification`: failure
+  notifications sent **only** from the scheduled health check, throttled per
+  `reason_code` with an atomic cache lock (fails open if the cache is broken),
+  carrying no secret. A recovery is logged once and clears the throttle.
+- Structured monitoring log events with one entry per event and a `reason_code`:
+  activation success (`info`), activation failure (`warning`), license expired
+  (`warning`), grace active / grace expired (`warning`), server unavailable
+  (`error`), and signature failure (`error`, distinguishing unknown / revoked
+  `key_id` in the log's `reason_code`).
+- Tests: `tests/Feature/LicenseMonitoringLogTest.php`,
+  `tests/Feature/LicenseNotificationTest.php`,
+  `tests/Unit/NotificationConfigTest.php`, and the
+  `tests/Concerns/CapturesLogs.php` helper.
 
 ### Changed
 
@@ -98,6 +120,17 @@ approved Phase 1-4 work and the tests that actually prove it.
   `log()` helper signature is `(level, message, ?Throwable, array)`); the two
   offline-grace warnings previously passed the context in the exception slot
   and would have raised a `TypeError`. No verification logic changed.
+- Monitoring log levels now match the spec: signature-verification failure is
+  logged at `error` (was `warning`), and an unreachable server is now logged at
+  `error` (it previously emitted only an event); activation success is logged at
+  `info`. The returned `LicenseStatus` and all public signatures are unchanged.
+- `LogSanitizer::scrubContext` now leaves structured identifier / enum context
+  keys untouched (`reason_code`, `previous_reason_code`, `status`,
+  `product_code`, `key_id`, `license_id`, `license_type`). Those values are not
+  secrets, and token-scrubbing them erased the operator signal
+  (e.g. `signature_verification_failed` became `[redacted-token]`).
+- Documentation baseline is now 219 tests / 537 assertions (previously 174/409,
+  then 153/359, 46/81, and 45/77 originally).
 
 ### Fixed
 
@@ -219,6 +252,17 @@ approved Phase 1-4 work and the tests that actually prove it.
  fails the offline path closed. Proven by
  `test_future_dated_last_successful_check_at_is_rejected()` in
  `tests/Feature/LicenseOfflineTrustTest.php`.
+- Maximum honour time documented (no behaviour change). The offline path's
+  maximum honour time is `min(signed offline_valid_until, last_successful_check_at
+  + grace_period)`, evaluated against the VERIFIED signed payload
+  (`LicenseVerifier::trustedOfflineRecord()` conditions 2 and 4). The fast path
+  applies NO local grace: in normal operation it serves until the signed
+  `offline_valid_until` passes, and a DB-write attacker who pins `next_check_at`
+  into the future can never extend a still-signed `active` record past its signed
+  boundary — the signed-boundary guard forces the normal online path
+  (`LicenseVerifier::fastPathStatus()`; proof:
+  `test_fresh_last_check_cannot_resurrect_a_past_signed_boundary()` plus the
+  five-day offline/fast-path cases in `tests/Feature/LicenseOfflineTrustTest.php`).
 
 ### Upgrade notes
 

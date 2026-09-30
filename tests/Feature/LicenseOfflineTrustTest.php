@@ -392,4 +392,61 @@ class LicenseOfflineTrustTest extends TestCase
             'next_check_at' => now()->subMinute(),
         ];
     }
+
+    // -----------------------------------------------------------------------
+    // P1: a 5-day-old cached payload that is still within the signed boundary
+    // and the local grace window.
+    //
+    // NOTE ON assertFreshTimestamp: verifyResponse() calls it for BOTH the
+    // online and the local verify path (SignedPayloadVerifier.php:134), and it
+    // reads checked_at/server_time under signature.timestamp_tolerance (300s),
+    // returning early when BOTH are absent. The cached payload here carries
+    // NEITHER, so assertFreshTimestamp is a no-op and must not reject the
+    // cached envelope. The tests below are written as regression guards against
+    // a future change that makes the local path enforce a freshness window.
+    // -----------------------------------------------------------------------
+
+    public function test_five_day_old_cached_payload_is_valid_when_boundary_and_grace_are_open(): void
+    {
+        $this->seedCache(
+            signed: [
+                'issued_at' => now()->subDays(5)->toIso8601String(),
+                'offline_valid_until' => now()->addDays(2)->toIso8601String(),
+            ],
+            columns: [
+                'issued_at' => now()->subDays(5)->toIso8601String(),
+                'offline_valid_until' => now()->addDays(2)->toIso8601String(),
+                'last_successful_check_at' => now()->subHours(2),
+                'next_check_at' => now()->subMinute(), // due -> offline path when the server is down
+            ],
+        );
+
+        $this->serverDown();
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertTrue($status->valid, 'A still-signed cached payload within the signed boundary and the local grace window must be valid offline.');
+        $this->assertTrue($status->offline, 'The status must be resolved from the offline path.');
+    }
+
+    public function test_five_day_old_cached_payload_is_valid_on_the_fast_path_when_not_due(): void
+    {
+        $this->seedCache(
+            signed: [
+                'issued_at' => now()->subDays(5)->toIso8601String(),
+                'offline_valid_until' => now()->addDays(2)->toIso8601String(),
+            ],
+            columns: [
+                'issued_at' => now()->subDays(5)->toIso8601String(),
+                'offline_valid_until' => now()->addDays(2)->toIso8601String(),
+                'last_successful_check_at' => now()->subHours(2),
+                'next_check_at' => now()->addDay(), // NOT due -> fast path
+            ],
+        );
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertTrue($status->valid, 'A not-yet-due signed cached payload within its signed boundary must be valid on the fast path.');
+        $this->assertTrue($status->fromCache, 'A fast-path hit is served from cache.');
+    }
 }
