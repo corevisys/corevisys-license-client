@@ -84,7 +84,7 @@ treats it as a secret everywhere it touches:
 | `allow_offline_verification` | `COREVISYS_LICENSE_ALLOW_OFFLINE` | `true` | Permit the frozen offline rule | Keep `true` for resilience; `false` forces an online check. |
 | `cache_driver` | `COREVISYS_LICENSE_CACHE_DRIVER` | `database` | `database` (table) or `cache` (store) | `database` is durable; `cache` must use a persistent store. |
 | `cache_store` | `COREVISYS_LICENSE_CACHE_STORE` | `null` | Cache store used in `cache` mode | Set an explicit persistent store. |
-| `cache_fallback_store` | `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` | `file` | Secondary store consulted only when the primary store throws | Must differ from the primary store in `cache` mode. Empty disables the fallback. The packaged default (`file`) is tolerated when it merely coincides with the framework's default cache store; the doctor then warns that the fallback is effectively disabled. |
+| `cache_fallback_store` | `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` | `file` | Secondary store consulted only when the primary store throws | Must differ from the primary store in `cache` mode. Empty disables the fallback. A value equal to the primary store is **disabled** (a same-store fallback adds no resilience): the packaged default (`file`) coinciding with the framework's default store is tolerated by validation and the doctor warns why, while any collision the operator set explicitly fails validation. |
 | `cache_fallback_store_explicit` | — | `false` | Derived at config-build time: was `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` set to a non-empty value? | Do not set by hand. It is a cache-safe presence signal used to tell a deliberately configured fallback apart from the packaged default; it is never read from the environment at runtime, so it keeps working under `config:cache`. |
 | `cache_key` | — | `corevisys.license.cache` | Cache-store key for the signed payload | Not a secret. |
 | `public_key_cache_key` | — | `corevisys.license.public_key` | Cache-store key for the public key set | Not a secret. |
@@ -173,7 +173,10 @@ normally — even with "not found" — is authoritative and never falls back, so
 stale mirror can never resurrect a deactivated or cleared license. Anything read
 from the fallback is forced through the full frozen offline rule (signature
 verification, a future `offline_valid_until`, `expires_at` absent or in the
-future, and local grace not expired). Writes mirror to both stores; a failing
+future, and local grace not expired). If the configured fallback resolves to the
+same store as the primary (in `cache` mode) it is **disabled** rather than
+used — a same-store fallback cannot survive the primary failure it exists for.
+Writes mirror to both stores; a failing
 store never throws out of the public API, and failures are logged as the
 exception class name and code only (never the message, which can contain SQL and
 bound values).

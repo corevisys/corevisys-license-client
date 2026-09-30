@@ -107,11 +107,15 @@ class LicenseStorageTest extends TestCase
         $this->assertNull($name, 'A deliberately-set fallback equal to the resolved default store must be dropped.');
     }
 
-    public function test_cache_mode_packaged_default_equal_to_app_default_is_tolerated(): void
+    public function test_cache_mode_packaged_default_equal_to_app_default_is_disabled(): void
     {
         // Out-of-the-box state: the packaged default fallback ("file") matches
-        // an application whose default store is also "file". Nothing was
-        // explicitly configured, so the fallback is kept usable.
+        // an application whose default store is also "file". A fallback that
+        // reads and writes the SAME store as the primary adds no resilience —
+        // the primary failure takes the fallback down with it — so it is
+        // DISABLED rather than kept usable. This is not an error (boot does not
+        // throw); the doctor reports why. INVERSES the previous behaviour,
+        // which kept the packaged default enabled.
         config(['cache.default' => 'file']);
 
         $name = $this->fallbackNameFor([
@@ -120,7 +124,7 @@ class LicenseStorageTest extends TestCase
             'cache_fallback_store' => 'file',
         ], explicitlySet: false);
 
-        $this->assertSame('file', $name);
+        $this->assertNull($name, 'A fallback equal to the primary store is disabled, never kept.');
     }
 
     public function test_cache_mode_distinct_fallback_is_kept(): void

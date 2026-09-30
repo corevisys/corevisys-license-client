@@ -204,9 +204,11 @@ class LicenseStorage implements LicenseStorageInterface
      * cache_store, or the application's default cache store — so a fallback
      * that merely equals the default store is detected too. This mirrors
      * {@see \CoreVisys\License\Support\ConfigValidator} and the doctor command.
+     * ANY collision with the primary store disables the fallback: a fallback
+     * pointing at the same store is a no-op, never a second storage location.
      * The packaged default ("file") colliding with an app default of "file" is
-     * the out-of-the-box state and is tolerated; a deliberately-set fallback
-     * that collides is a no-op and is dropped.
+     * tolerated by validation (boot does not throw) but is still disabled, and
+     * the doctor reports why; a deliberately-set collision fails validation.
      */
     protected function fallbackStoreName(): ?string
     {
@@ -217,10 +219,12 @@ class LicenseStorage implements LicenseStorageInterface
         }
 
         if (! $this->usingDatabase() && $name === $this->resolvedPrimaryCacheStoreName()) {
-            $isPackagedDefault = $name === self::PACKAGED_DEFAULT_FALLBACK_STORE
-                && ! $this->hasExplicitFallbackSetting();
-
-            return $isPackagedDefault ? $name : null;
+            // A fallback that reads and writes the SAME store as the primary
+            // adds no resilience — a primary failure takes the fallback down
+            // with it — so it is DISABLED rather than kept. This is not an
+            // error (boot does not throw); the doctor reports why. A collision
+            // the operator set explicitly fails validation instead.
+            return null;
         }
 
         return $name;
