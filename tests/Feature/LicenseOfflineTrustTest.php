@@ -255,6 +255,60 @@ class LicenseOfflineTrustTest extends TestCase
         $this->assertTrue($status->offline);
     }
 
+    // (d) A signed ACTIVE payload with NO signed offline_valid_until must not be
+    //     rescued by a future-looking unsigned column: the unsigned boundary is
+    //     never read, so an absent signed boundary means no offline trust.
+    public function test_signed_active_with_absent_boundary_is_not_extended_by_unsigned_column(): void
+    {
+        $this->seedCache(
+            signed: ['offline_valid_until' => null], // absent in the signed payload
+            columns: ['offline_valid_until' => now()->addDays(90)->toIso8601String()],
+        );
+
+        $this->serverDown();
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertFalse($status->valid, 'A signed active payload with no signed offline boundary must not be trusted offline.');
+    }
+
+    // (e) A future-dated last_successful_check_at must not be trusted: it is a
+    //     clock-tamper/forward-skew that would otherwise keep the local grace
+    //     window open indefinitely. A small skew is tolerated.
+    public function test_future_dated_last_successful_check_at_is_rejected(): void
+    {
+        $this->seedCache(
+            signed: ['offline_valid_until' => now()->addDays(7)->toIso8601String()],
+            columns: ['last_successful_check_at' => now()->addDays(2)], // beyond a small skew
+        );
+
+        $this->serverDown();
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertFalse($status->valid, 'A future-dated last_successful_check_at must not extend the local grace window.');
+    }
+
+    // Boundary bound: even with last_successful_check_at refreshed to NOW (the
+    // local grace window wide open), a SIGNED offline_valid_until in the past
+    // is never resurrected. Trust can never exceed the signed boundary.
+    public function test_fresh_last_check_cannot_resurrect_a_past_signed_boundary(): void
+    {
+        $this->seedCache(
+            signed: ['offline_valid_until' => now()->subDay()->toIso8601String()],
+            columns: [
+                'offline_valid_until' => now()->subDay()->toIso8601String(),
+                'last_successful_check_at' => now(), // refreshed -> grace wide open
+            ],
+        );
+
+        $this->serverDown();
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertFalse($status->valid, 'Trust must never exceed the signed offline_valid_until, even with a fresh last check.');
+    }
+
     // -----------------------------------------------------------------------
 
     private array $storageConfig = [];

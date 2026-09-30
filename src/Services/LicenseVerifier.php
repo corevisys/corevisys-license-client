@@ -40,6 +40,15 @@ class LicenseVerifier
      */
     private const FALLBACK_VERSION = '1.0.0';
 
+    /**
+     * Tolerance for a last_successful_check_at that appears slightly in the
+     * future (clock skew between the app host and the DB/cache host). Anything
+     * beyond this is treated as a forward-dated tamper and fails the offline
+     * path closed, so the local grace window can never be renewed by editing
+     * the row.
+     */
+    private const LAST_CHECK_FUTURE_SKEW_SECONDS = 300;
+
     /** Memoized result of {@see packageVersion()}. */
     private ?string $resolvedPackageVersion = null;
 
@@ -191,15 +200,12 @@ class LicenseVerifier
             return null;
         }
 
-        // (2) Status, expiry and the reported boundary come from the *verified*
-        // payload, never the unsigned columns — the signed payload wins.
-        // Assigning the (possibly null) signed boundary unconditionally also
-        // guarantees the unsigned column can never leak into the resolved
-        // status.
-        $record = $cached;
-        $record['status'] = $status;
-        $record['expires_at'] = $this->parseDate($data['expires_at'] ?? null);
-        $record['offline_valid_until'] = $signedOfflineUntil;
+        // (2) Status, expiry, the reported boundary AND every signed entitlement
+        // field (license_id, license_type, product_code, features,
+        // is_grace_period) come from the *verified* payload, never the unsigned
+        // columns — the signed payload wins. A field absent from the payload
+        // resolves to null/empty, never the column.
+        $record = $this->applySignedEntitlements($cached, $data);
 
         $resolved = $this->statusFromCacheRecord($record, offline: false, alreadyValidated: false);
 
@@ -426,18 +432,73 @@ class LicenseVerifier
             return null;
         }
 
-        $graceHours = (int) ($this->config['grace_period'] ?? 72);
+        $lastCheck = Carbon::parse($cached['last_successful_check_at']);
 
-        if (Carbon::parse($cached['last_successful_check_at'])->addHours($graceHours)->isPast()) {
+        // A future-dated last_successful_check_at (clock tamper, or a forward
+        // skew beyond a small tolerance) would otherwise push the grace
+        // window's end indefinitely into the future. Reject it: the window may
+        // only ever shorten the signed boundary, never be renewed by editing
+        // the row.
+        if ($lastCheck->isAfter(now()->addSeconds(self::LAST_CHECK_FUTURE_SKEW_SECONDS))) {
             return null;
         }
 
-        $record = $cached;
+        $graceHours = (int) ($this->config['grace_period'] ?? 72);
+
+        if ($lastCheck->copy()->addHours($graceHours)->isPast()) {
+            return null;
+        }
+
+        // Overlay every SIGNED field (status, expiry, boundary, license_id,
+        // license_type, product_code, features, is_grace_period) from the
+        // verified payload; the unsigned columns never decide entitlement.
+        return $this->applySignedEntitlements($cached, $data);
+    }
+
+    /**
+     * Overlay the SIGNED data fields onto a cache record so the unsigned
+     * columns can never supply (or withhold) entitlement. A field absent from
+     * the signed payload resolves to null/empty, never the column.
+     *
+     * Signed fields (frozen contract A2): status, license_id, product_code,
+     * license_type, expires_at, features, issued_at, offline_valid_until,
+     * is_grace_period.
+     *
+     * @param  array<string, mixed>  $record
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function applySignedEntitlements(array $record, array $data): array
+    {
         $record['status'] = (string) ($data['status'] ?? 'unknown');
-        $record['expires_at'] = $expiresAt;
-        $record['offline_valid_until'] = $offlineUntil;
+        $record['expires_at'] = $this->parseDate($data['expires_at'] ?? null);
+        $record['offline_valid_until'] = $this->parseDate($data['offline_valid_until'] ?? null);
+        $record['issued_at'] = $this->parseDate($data['issued_at'] ?? null);
+        $record['license_id'] = $data['license_id'] ?? null;
+        $record['license_type'] = $data['license_type'] ?? null;
+        $record['product_code'] = $data['product_code'] ?? $this->productCode;
+        $record['features'] = $this->normalizeFeatures($data['features'] ?? null);
+        $record['is_grace_period'] = (bool) ($data['is_grace_period'] ?? false);
 
         return $record;
+    }
+
+    /**
+     * Coerce a signed features value to an array. Accepts an array as-is, a
+     * JSON string (decoded), or anything else (empty array). Never falls back
+     * to the unsigned column.
+     *
+     * @return array<int, mixed>
+     */
+    protected function normalizeFeatures(mixed $features): array
+    {
+        if (is_string($features)) {
+            $decoded = json_decode($features, true);
+
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return is_array($features) ? $features : [];
     }
 
     protected function isDue(array $cached): bool

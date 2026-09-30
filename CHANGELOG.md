@@ -201,9 +201,41 @@ approved Phase 1-4 work and the tests that actually prove it.
  `tests/Feature/LicenseOfflineTrustTest.php` proves the signed-only rule for
  both the primary and the fallback store. **Installs upgrading should treat this
  as a security-relevant upgrade.**
+- Signed entitlement overlay (security-relevant). On BOTH the fast path and the
+ offline path, `features`, `license_id`, `license_type`, `product_code`, and
+ `is_grace_period` were still read from the **unsigned** cache columns, so DB
+ write access could grant features the server never issued (for example editing
+ a `features` JSON column to add a premium capability). All five, plus `status`,
+ `expires_at`, `offline_valid_until`, and `issued_at`, are now overlaid from the
+ verified signed payload; a field absent from the payload resolves to
+ null/empty, never the column. Proven by
+ `tests/Feature/FastPathEntitlementTest.php` (fast path, offline path, and the
+ fallback store). **Installs upgrading should treat this as a security-relevant
+ upgrade.**
+- Future-dated `last_successful_check_at` rejected (security-relevant). The
+ offline path anchored the local grace window to `last_successful_check_at`; a
+ forward-dated value (clock tamper or a forward clock skew) could keep the local
+ grace window open indefinitely. A value more than 300 seconds in the future now
+ fails the offline path closed. Proven by
+ `test_future_dated_last_successful_check_at_is_rejected()` in
+ `tests/Feature/LicenseOfflineTrustTest.php`.
 
 ### Upgrade notes
 
+- Offline trust on upgrade: the offline/grace path now reads the signed payload
+  for `status`, `expires_at`, `offline_valid_until`, `issued_at`, `license_id`,
+  `license_type`, `product_code`, `features`, and `is_grace_period`, instead of
+  the unsigned columns. A cached row whose **unsigned** columns disagreed with
+  its signed payload (for example a hand-edited `features` or `status`) is now
+  resolved according to the signed payload, so it may be denied (or lose
+  features) where it was previously — incorrectly — allowed. This is the
+  intended, fail-closed behavior; no manual action is required. Proven by
+  `tests/Feature/LicenseOfflineTrustTest.php` and
+  `tests/Feature/FastPathEntitlementTest.php`.
+- Database-mode fallback writes: installs using `cache_driver = database` mirror
+  every write to `cache_fallback_store` (default `file`) as a resilience mirror.
+  The mirror never stores the license key. To disable the mirror, set
+  `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` to an empty value.
 - Security behavior changes: the activation form no longer repopulates the key
   field after a failed submit (it never did carry the value forward by design,
   but the input is now explicitly excluded), and activation failures show a

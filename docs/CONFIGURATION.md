@@ -1,5 +1,10 @@
 # Configuration Reference
 
+> **Default values below are the real packaged defaults**, read from
+> `config/corevisys-license.php` (`check_interval` = `86400` s,
+> `grace_period` = `72` h, `signature.public_key_cache_ttl` = `86400` s, signed
+> `offline_valid_until` = server-issued).
+
 All configuration lives in `config/corevisys-license.php`. Publish it with:
 
 ```
@@ -156,6 +161,29 @@ Rules, in plain terms:
   boundary that has already passed.
 - The signed `is_grace_period` flag is reported for visibility only; it does not
   by itself grant trust.
+
+The three windows, with their packaged defaults (read from
+`config/corevisys-license.php`):
+
+| Window | Config key | Default | Notes |
+|---|---|---|---|
+| Fast-path recheck | `check_interval` (→ `next_check_at`) | `86400` s (24 h) | A not-yet-due record is served with no round trip only while the signed boundary is also unexpired. |
+| Server offline boundary | signed `offline_valid_until` | server-issued | The absolute upper bound on offline trust. |
+| Local grace | `grace_period` | `72` h | Anchored to `last_successful_check_at`; can only shorten the boundary. |
+| Revocation freshness | `signature.public_key_cache_ttl` | `86400` s (24 h) | Worst-case delay before a key revocation is learned (see below). |
+
+**Absolute bound.** Trust can never exceed the signed `offline_valid_until`. Even
+with `last_successful_check_at` refreshed to now (the local grace window wide
+open), a signed boundary already in the past is never resurrected — proven by
+`test_fresh_last_check_cannot_resurrect_a_past_signed_boundary()` in
+`tests/Feature/LicenseOfflineTrustTest.php`.
+
+**Entitlement fields are signed too.** On both the fast path and the offline
+path, `status`, `expires_at`, `offline_valid_until`, `issued_at`, `license_id`,
+`license_type`, `product_code`, `features`, and `is_grace_period` come from the
+verified signed payload, never the unsigned columns. A field absent from the
+signed payload resolves to null/empty, never the column. Proven by
+`tests/Feature/FastPathEntitlementTest.php`.
 
 The same signed-only rule is applied to a record read from the
 `cache_fallback_store`: the fallback is a storage location, not a trust
