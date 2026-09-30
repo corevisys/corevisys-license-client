@@ -66,4 +66,41 @@ class LogSanitizerTest extends TestCase
         $this->assertSame('request_rejected', $scrubbed['reason_code']);
         $this->assertStringNotContainsString($secret, $scrubbed['nested']['error']);
     }
+
+    public function test_context_safe_enum_keys_are_left_intact(): void
+    {
+        // Regression guard: the enum values the doctor/monitor log rely on must
+        // never be token-/email-scrubbed away.
+        $scrubbed = LogSanitizer::scrubContext([
+            'reason_code' => 'signature_verification_failed',
+            'status' => 'license_server_unavailable',
+        ], []);
+
+        $this->assertSame('signature_verification_failed', $scrubbed['reason_code']);
+        $this->assertSame('license_server_unavailable', $scrubbed['status']);
+    }
+
+    public function test_explicit_secret_is_redacted_even_in_a_safe_context_key(): void
+    {
+        // A short key parked in a "safe" key is still a secret: an explicitly
+        // supplied secret must win over the enum-preservation rule.
+        $secret = 'COREVISYS-KEY-12345';
+
+        $scrubbed = LogSanitizer::scrubContext(['reason_code' => $secret], [$secret]);
+
+        $this->assertStringNotContainsString($secret, $scrubbed['reason_code']);
+        $this->assertStringContainsString('[redacted]', $scrubbed['reason_code']);
+    }
+
+    public function test_context_secret_below_token_length_is_redacted_when_known(): void
+    {
+        // 19 chars: shorter than the 24-char heuristic, so only the explicit
+        // known-secret path can catch it.
+        $secret = 'COREVISYS-KEY-12345';
+
+        $scrubbed = LogSanitizer::scrubContext(['error' => "the value {$secret} was rejected"], [$secret]);
+
+        $this->assertStringNotContainsString($secret, $scrubbed['error']);
+        $this->assertStringContainsString('[redacted]', $scrubbed['error']);
+    }
 }

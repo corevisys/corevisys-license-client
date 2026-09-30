@@ -88,8 +88,12 @@ class LicenseActivator
             return ActivationResult::success($this->safeServerMessage($response->message, $licenseKey) ?? 'License activated successfully.', $status);
         } catch (LicenseClientException $e) {
             // Diagnostic detail is logged (redacted) but the value returned to
-            // callers is a generic, key-free message.
-            $safeMessage = LogSanitizer::scrubMessage($e->getMessage());
+            // callers is a generic, key-free message. The submitted key is
+            // passed as a known secret so even a short key echoed back by a
+            // lower layer (a server validation body, a transport exception) is
+            // stripped from BOTH the stored error and the log context.
+            $knownSecret = array_filter([$licenseKey]);
+            $safeMessage = LogSanitizer::scrubMessage($e->getMessage(), $knownSecret);
 
             $this->storage->put($this->productCode, [
                 'last_error_at' => now(),
@@ -100,7 +104,7 @@ class LicenseActivator
                 'reason_code' => $e->errorCode(),
                 'product_code' => $this->productCode,
                 'error' => $e->getMessage(),
-            ]);
+            ], $knownSecret);
 
             return ActivationResult::failure(
                 'Activation failed. Please check the key and try again.',
@@ -128,16 +132,17 @@ class LicenseActivator
 
     /**
      * @param  array<string, mixed>  $context
+     * @param  array<int, string|null>  $knownSecrets
      */
-    protected function log(string $level, string $message, array $context = []): void
+    protected function log(string $level, string $message, array $context = [], array $knownSecrets = []): void
     {
         if (! config('corevisys-license.logging.enabled', true)) {
             return;
         }
 
         Log::channel(config('corevisys-license.logging.channel', 'stack'))->{$level}(
-            LogSanitizer::scrubMessage($message),
-            LogSanitizer::scrubContext($context)
+            LogSanitizer::scrubMessage($message, $knownSecrets),
+            LogSanitizer::scrubContext($context, $knownSecrets)
         );
     }
 

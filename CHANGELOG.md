@@ -28,6 +28,21 @@ approved Phase 1-4 work and the tests that actually prove it.
 
 ## [Unreleased]
 
+### Security
+
+- The `cache_fallback_store` presence signal is now derived into a boolean
+  config key (`cache_fallback_store_explicit`) at config-build time, so no
+  `env()` call remains under `src/` and the decision survives `config:cache`.
+- A cache fallback that resolves to the SAME store as the primary is now
+  disabled — it cannot survive the primary failure it exists for. The packaged
+  default colliding with the app default is tolerated by boot validation and the
+  doctor reports why; an explicit collision fails validation.
+- Log/error sanitizing: an explicitly supplied secret is now redacted even when
+  it lands in an enum / "safe" context key or is shorter than the 24-char token
+  heuristic, and the activation failure path passes the submitted license key as
+  a known secret so a short key echoed back by a lower layer is stripped from
+  both the stored `last_error_message` and the log context.
+
 ### Added
 
 - `config_version` config key (integer, default `1`) and an expected-version

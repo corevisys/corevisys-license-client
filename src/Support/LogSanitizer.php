@@ -52,16 +52,30 @@ final class LogSanitizer
             return '';
         }
 
-        foreach ($knownSecrets as $secret) {
-            if (is_string($secret) && strlen($secret) >= 8) {
-                $message = str_replace($secret, LicenseKeyRedactor::REDACTED, $message);
-            }
-        }
-
+        $message = self::scrubKnownSecrets($message, $knownSecrets);
         $message = self::scrubEmails($message);
         $message = self::scrubTokens($message);
 
         return $message;
+    }
+
+    /**
+     * Replace only explicitly supplied secrets (no heuristic email/token
+     * scrubbing). Shared by scrubMessage() and the structured "safe" context
+     * keys, whose own values may look token-ish but must still yield to a
+     * caller-known secret.
+     *
+     * @param  array<int, string|null>  $knownSecrets
+     */
+    private static function scrubKnownSecrets(string $value, array $knownSecrets): string
+    {
+        foreach ($knownSecrets as $secret) {
+            if (is_string($secret) && strlen($secret) >= 8) {
+                $value = str_replace($secret, LicenseKeyRedactor::REDACTED, $value);
+            }
+        }
+
+        return $value;
     }
 
     /**
@@ -75,11 +89,14 @@ final class LogSanitizer
     public static function scrubContext(array $context, array $knownSecrets = []): array
     {
         foreach ($context as $key => $value) {
-            // Structured identifier / enum fields are never secrets, and their
-            // values (e.g. "signature_verification_failed",
-            // "license_server_unavailable") look token-ish, so token-scrubbing
-            // them would erase the very operator signal we need.
+            // Structured identifier / enum fields are never token- or
+            // email-scrubbed: their values (e.g. "signature_verification_failed",
+            // "license_server_unavailable") look token-ish, and erasing them
+            // would destroy the very operator signal we need. An EXPLICITLY
+            // supplied secret still wins, so a short license key (below the
+            // heuristic token length) parked in a "safe" key cannot survive.
             if (is_string($value) && in_array((string) $key, self::SAFE_CONTEXT_KEYS, true)) {
+                $context[$key] = self::scrubKnownSecrets($value, $knownSecrets);
                 continue;
             }
 

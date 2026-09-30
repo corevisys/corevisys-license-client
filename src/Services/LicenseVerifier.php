@@ -598,9 +598,6 @@ class LicenseVerifier
     }
 
     /**
-     * @param  array<string, mixed>  $context
-     */
-    /**
      * Classify a signature-verification failure for the log's reason_code.
      * The returned LicenseStatus is still the generic
      * 'signature_verification_failed' (Section A) — only the log context
@@ -621,6 +618,9 @@ class LicenseVerifier
         return 'signature_verification_failed';
     }
 
+    /**
+     * @param  array<string, mixed>  $context
+     */
     protected function log(string $level, string $message, ?\Throwable $e = null, array $context = []): void
     {
         if (! ($this->config['logging']['enabled'] ?? true)) {
