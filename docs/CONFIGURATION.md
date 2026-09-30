@@ -1,5 +1,10 @@
 # Configuration Reference
 
+> **Default values below are the real packaged defaults**, read from
+> `config/corevisys-license.php` (`check_interval` = `86400` s,
+> `grace_period` = `72` h, `signature.public_key_cache_ttl` = `86400` s, signed
+> `offline_valid_until` = server-issued).
+
 All configuration lives in `config/corevisys-license.php`. Publish it with:
 
 ```
@@ -7,7 +12,12 @@ php artisan vendor:publish --tag=corevisys-license-config
 ```
 
 The package is safe under `php artisan config:cache`: every value is read via
-`config()` at runtime, and no `env()` call exists outside the config file.
+`config()` at runtime, and no `env()` call exists outside the config file. Where
+a decision depends on whether an env var was *set* (a presence signal, as opposed
+to its value), that signal is derived into a boolean config key at
+config-build time rather than looked up from the environment at runtime — under
+`config:cache` the environment is not loaded, so a runtime lookup would always be
+null.
 
 ## Policy: secrets
 
@@ -74,7 +84,8 @@ treats it as a secret everywhere it touches:
 | `allow_offline_verification` | `COREVISYS_LICENSE_ALLOW_OFFLINE` | `true` | Permit the frozen offline rule | Keep `true` for resilience; `false` forces an online check. |
 | `cache_driver` | `COREVISYS_LICENSE_CACHE_DRIVER` | `database` | `database` (table) or `cache` (store) | `database` is durable; `cache` must use a persistent store. |
 | `cache_store` | `COREVISYS_LICENSE_CACHE_STORE` | `null` | Cache store used in `cache` mode | Set an explicit persistent store. |
-| `cache_fallback_store` | `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` | `file` | Secondary store consulted only when the primary store throws | Must differ from the primary store in `cache` mode. Empty disables the fallback. The packaged default (`file`) is tolerated when it merely coincides with the framework's default cache store; the doctor then warns that the fallback is effectively disabled. |
+| `cache_fallback_store` | `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` | `file` | Secondary store consulted only when the primary store throws | Must differ from the primary store in `cache` mode. Empty disables the fallback. A value equal to the primary store is **disabled** (a same-store fallback adds no resilience): the packaged default (`file`) coinciding with the framework's default store is tolerated by validation and the doctor warns why, while any collision the operator set explicitly fails validation. |
+| `cache_fallback_store_explicit` | — | `false` | Derived at config-build time: was `COREVISYS_LICENSE_CACHE_FALLBACK_STORE` set to a non-empty value? | Do not set by hand. It is a cache-safe presence signal used to tell a deliberately configured fallback apart from the packaged default; it is never read from the environment at runtime, so it keeps working under `config:cache`. |
 | `cache_key` | — | `corevisys.license.cache` | Cache-store key for the signed payload | Not a secret. |
 | `public_key_cache_key` | — | `corevisys.license.public_key` | Cache-store key for the public key set | Not a secret. |
 | `fingerprint.algorithm` | `COREVISYS_LICENSE_FINGERPRINT_ALGO` | `sha256` | Fingerprint hash | `hmac-sha256` needs the secret below. |
@@ -90,12 +101,17 @@ treats it as a secret everywhere it touches:
 | `middleware.redirect_route` | — | `null` | Route name for denied web requests | Point at a page NOT behind `corevisys.license`. |
 | `middleware.abort_status` | — | `403` | Status for denied JSON requests | `403` is the safe default. |
 | `middleware.bypass_in_local` | `COREVISYS_LICENSE_BYPASS_LOCAL` | `false` | Skip enforcement when local | MUST remain `false` in production. |
+| `middleware.excluded_routes` | — | packaged defaults (below) | Route names and/or `Str::is` path patterns `corevisys.license` lets through with **no** license check and **no** server call | Keep auth/health/activation listed so a lapsed license can always be repaired. Absent/null/empty means the packaged defaults apply. The activation route is exempt regardless of this list. See `docs/ROUTES.md`. |
 | `ui.enabled` | `COREVISYS_LICENSE_UI_ENABLED` | `true` | Enable the activation screen | Turn off if you build your own UI. |
 | `ui.route_prefix` | `COREVISYS_LICENSE_UI_PREFIX` | `license` | Activation route prefix | Keep the activation route open (never behind `corevisys.license`). |
 | `ui.route_name` | — | `corevisys.license.activate` | Named activation route | The default deny redirect target. |
 | `ui.middleware` | — | `['web']` | Middleware for the activation page | Add `auth` if only admins may activate. |
 | `logging.enabled` | `COREVISYS_LICENSE_LOGGING` | `true` | Emit package log events | Keep `true` so operators see issues. |
-| `logging.channel` | `COREVISYS_LICENSE_LOG_CHANNEL` | `stack` | Log channel used by the package | Point at a monitored channel. |
+| `logging.channel` | `COREVISYS_LICENSE_LOG_CHANNEL` | `stack` | Log channel used by the package (this IS the spec's "log_channel"; there is no separate key) | Point at a monitored channel. |
+| `notifications.enabled` | `COREVISYS_LICENSE_NOTIFICATIONS` | `false` | Send failure notifications from the scheduled health check | Opt in explicitly; log-only until then. |
+| `notifications.channels` | `COREVISYS_LICENSE_NOTIFICATION_CHANNELS` | `['log']` | Delivery channels (allowed: `log`, `mail`) | Add `mail` only once recipients are set. |
+| `notifications.mail_recipients` | `COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS` | `[]` | Mail recipients for the `mail` channel | Use a monitored ops mailbox. |
+| `notifications.throttle_interval` | `COREVISYS_LICENSE_NOTIFICATION_THROTTLE` | `3600` | Seconds between repeated notifications for the SAME reason. `0` **disables** the throttle (every failure notifies) | Raise to reduce alert noise; use `0` to always alert. |
 
 ## Validation at boot
 
@@ -106,17 +122,82 @@ fast with a clear message that never includes a secret:
 - `grace_period` — must be a non-negative whole number of hours.
 - `cache_driver` — must be `database` or `cache`.
 - `signature.algorithm` — must be `rsa`.
+- `notifications.channels` — when set, may only contain `log` and/or `mail`.
+- `notifications.throttle_interval` — when set, must be a non-negative whole
+  number of seconds. `0` is valid and means "throttle disabled", not "suppress".
 - `cache_fallback_store` — when set, must name a configured cache store, and in
   `cache` driver mode must differ from the primary store *after resolution* (an
   explicit `cache_store`, else the application's `cache.default`). The packaged
   default (`file`) is tolerated when it only coincides with the framework's own
   default store, because that is the out-of-the-box state, not a configured
   collision; `corevisys:license:doctor` warns in that case. Empty disables it.
+- `middleware.excluded_routes` — when present, must be an array whose every entry
+  is a non-empty string (a route name and/or an `Str::is` path pattern). A
+  non-array value, or an entry that is not a non-empty string, fails clearly;
+  absent, `null` or an empty list is valid and yields the packaged defaults. The
+  failure message describes the shape and never prints a configured route value.
 
 Empty-string environment values are normalized to the documented default (for
 example `COREVISYS_LICENSE_SERVER_URL=` still yields the default URL), so only
 genuinely malformed **non-empty** values fail. Missing optional values (for
 example `license_key`, `cache_store`, `fingerprint.hmac_secret`) are tolerated.
+
+### Default open routes (`middleware.excluded_routes`)
+
+When `middleware.excluded_routes` is absent, `null` or empty, the packaged
+defaults apply — each entry is matched with `Str::is()` against **both** the
+route name and the URL path, so a bare word covers its name and its path:
+
+| Entry | Covers |
+|---|---|
+| `corevisys.license.activate` / `...activate.store` | The built-in activation screen (GET and POST actions) |
+| `license/activate` | The activation path itself |
+| `login`, `logout` | Conventional auth routes (by name and path) |
+| `health`, `up` | Conventional health/liveness probes (by name and path) |
+
+"Empty" therefore means *the documented defaults*, never "exclude everything".
+The built-in activation route is **always** exempt regardless of this list (a
+hard-coded guard keyed on `ui.route_name` / `ui.route_prefix`), so an operator
+who removes it can never create a redirect loop. Full routing detail, the
+lockout-safety rationale, and emergency steps are in `docs/ROUTES.md`.
+
+## Monitoring and notifications
+
+All logging uses `logging.channel` (default `stack`) and is suppressed when
+`logging.enabled` is `false`. One structured entry is emitted per event, with a
+`reason_code` and non-secret identifiers only (`license_id`, `product_code`,
+`key_id`); the raw license key is never logged.
+
+| Event | Level | Trigger |
+| --- | --- | --- |
+| activated successfully | `info` | Successful activation |
+| activation failed | `warning` | Activation rejected |
+| license expired | `warning` | A check returns `expired` |
+| grace period active | `warning` | A check returns `is_grace_period` |
+| grace window expired | `warning` | Offline fallback with a lapsed signed boundary |
+| license server unavailable | `error` | Check could not reach the server |
+| signature verification failed | `error` | Signature invalid, unknown `key_id`, or revoked `key_id` (`reason_code` distinguishes them) |
+
+The `reason_code` on a signature-verification failure is a **log label only**;
+the returned `LicenseStatus` stays `signature_verification_failed` and the
+licence stays invalid. `unknown_key_id` does not necessarily mean the server
+reported an unknown key: it can also appear when the signing-key metadata
+cannot be resolved, for example a **cold key cache** and/or an **unreachable
+public-key endpoint**. See `ColdKeyCacheCharacterizationTest`.
+
+Notifications are sent **only** from the scheduled health check
+(`corevisys:license:check`), never from the request path, so a normal request can
+never trigger an alert. They are **opt-in** (`notifications.enabled` defaults to
+`false`). When enabled, a failure notifies at most once per `reason_code` per
+`notifications.throttle_interval` seconds (an atomic cache lock); a recovery is
+logged once and clears the throttle so the next failure alerts immediately. A
+`throttle_interval` of `0` **disables** the throttle — every failure notifies,
+including two failures with the same reason in the same instant (proven by
+`ThrottleIntervalZeroCharacterizationTest`). If the cache used for the throttle
+lock is unavailable, the notifier fails **open** (it notifies) so a broken cache
+never silently suppresses an alert. The
+notification payload carries only `reason_code`, `product_code`, `status`, and a
+timestamp — never the license key or signature.
 
 ## Storage fallback and the offline rule
 
@@ -127,10 +208,102 @@ normally — even with "not found" — is authoritative and never falls back, so
 stale mirror can never resurrect a deactivated or cleared license. Anything read
 from the fallback is forced through the full frozen offline rule (signature
 verification, a future `offline_valid_until`, `expires_at` absent or in the
-future, and local grace not expired). Writes mirror to both stores; a failing
+future, and local grace not expired). If the configured fallback resolves to the
+same store as the primary (in `cache` mode) it is **disabled** rather than
+used — a same-store fallback cannot survive the primary failure it exists for.
+Writes mirror to both stores; a failing
 store never throws out of the public API, and failures are logged as the
 exception class name and code only (never the message, which can contain SQL and
 bound values).
+
+### Offline trust windows — which value wins
+
+When the server cannot be reached, the client trusts a cached license only
+through the **signed** payload the server issued, never through the unsigned
+cache columns. Three windows apply and the client honours the **maximum
+honour window** whose conditions are all satisfied:
+
+| Window | Source | Can it extend trust? |
+|---|---|---|
+| Server offline boundary | signed `offline_valid_until` | Yes — the primary boundary the server issued |
+| Server expiry | signed `expires_at` | No — an expired license is never rescued by the offline window |
+| Local grace | `grace_period` hours from the last successful check | No — it can only shorten the boundary |
+
+Rules, in plain terms:
+
+- `offline_valid_until` must be **signed and in the future**. The unsigned
+  column of the same name is never read, so editing it can neither extend trust
+  nor deny it.
+- Signed `expires_at` must be absent or in the future.
+- The local `grace_period` is anchored to `last_successful_check_at` and can only
+  **shorten** the outward boundary. A recent check never extends a signed
+  boundary that has already passed.
+- The signed `is_grace_period` flag is reported for visibility only; it does not
+  by itself grant trust.
+
+The three windows, with their packaged defaults (read from
+`config/corevisys-license.php`):
+
+| Window | Config key | Default | Notes |
+|---|---|---|---|
+| Fast-path recheck | `check_interval` (→ `next_check_at`) | `86400` s (24 h) | A not-yet-due record is served with no round trip only while the signed boundary is also unexpired. |
+| Server offline boundary | signed `offline_valid_until` | server-issued | The absolute upper bound on offline trust. |
+| Local grace | `grace_period` | `72` h | Anchored to `last_successful_check_at`; can only shorten the boundary. |
+| Revocation freshness | `signature.public_key_cache_ttl` | `86400` s (24 h) | Worst-case delay before a key revocation is learned (see below). |
+
+**Absolute bound.** Trust can never exceed the signed `offline_valid_until`. Even
+with `last_successful_check_at` refreshed to now (the local grace window wide
+open), a signed boundary already in the past is never resurrected — proven by
+`test_fresh_last_check_cannot_resurrect_a_past_signed_boundary()` in
+`tests/Feature/LicenseOfflineTrustTest.php`.
+
+**Entitlement fields are signed too.** On both the fast path and the offline
+path, `status`, `expires_at`, `offline_valid_until`, `issued_at`, `license_id`,
+`license_type`, `product_code`, `features`, and `is_grace_period` come from the
+verified signed payload, never the unsigned columns. A field absent from the
+signed payload resolves to null/empty, never the column. Proven by
+`tests/Feature/FastPathEntitlementTest.php`.
+
+The same signed-only rule is applied to a record read from the
+`cache_fallback_store`: the fallback is a storage location, not a trust
+shortcut. Proven by `tests/Feature/LicenseOfflineTrustTest.php`.
+
+### Maximum honour time
+
+**Offline path.** The maximum honour time is the earlier of the signed
+`offline_valid_until` and `last_successful_check_at + grace_period` — that is,
+`min(signed offline_valid_until, last_successful_check_at + grace_period)`. The
+local `grace_period` can only shorten the signed boundary, never extend it. Both
+`offline_valid_until` and `expires_at` are read from the VERIFIED signed payload,
+never the unsigned columns. Code: `LicenseVerifier::trustedOfflineRecord()`
+(condition 2 = the signed boundary is in the future; condition 4 = the local
+grace window anchored to `last_successful_check_at` has not expired).
+
+**Fast path.** In normal operation the cached record is honoured until the
+signed `offline_valid_until` passes. The fast path applies **no** local
+`grace_period` — it is not part of `fastPathStatus()`. An attacker with DB write
+access can pin `next_check_at` into the future, but that only changes *when* the
+record is considered due; it never extends trust past the signed boundary,
+because a signed `offline_valid_until` already in the past forces the normal
+online path (`LicenseVerifier::fastPathStatus()`, the signed-boundary guard).
+
+The absolute ceiling on both paths is the signed `offline_valid_until`; proven by
+`test_fresh_last_check_cannot_resurrect_a_past_signed_boundary()` and the
+five-day offline/fast-path cases in `tests/Feature/LicenseOfflineTrustTest.php`.
+
+## Revocation freshness (cached key set)
+
+A revocation is enforced as soon as the client resolves it, but the client learns
+of a revocation from the cached public-key set, whose lifetime is
+`signature.public_key_cache_ttl` (default `86400` seconds / 24h):
+
+- On the fast path (a not-yet-due record verified locally), a key revoked *after*
+  the key set was last refreshed can still be accepted until the key set is
+  refreshed or the record becomes due and triggers a fresh check.
+- A fresh online check uses the published key set and fails closed for a revoked
+  or unknown `key_id` (A5).
+- Lower `signature.public_key_cache_ttl` to shorten the worst-case window, at the
+  cost of more key-fetch requests.
 
 ## Diagnostics
 

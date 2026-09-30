@@ -137,4 +137,66 @@ class LicenseKeyNonDisclosureTest extends TestCase
         $this->assertStringContainsString('autocomplete="new-password"', $html);
         $this->assertStringNotContainsString('old(\'license_key\')', $html);
     }
+
+    public function test_controller_activation_success_never_exposes_the_key(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/activate' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_nd_success',
+                'status' => 'active',
+                'product_code' => 'test-product',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+            '*/api/v1/license/check' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_nd_success',
+                'status' => 'active',
+                'product_code' => 'test-product',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $response = $this->followingRedirects()
+            ->from(route('corevisys.license.activate'))
+            ->post(route('corevisys.license.activate'), ['license_key' => self::SENTINEL]);
+
+        $response->assertOk();
+        $response->assertSessionHasNoErrors();
+        // Rendered page, session flash, old input and error bag must all be free
+        // of the raw key on the success path.
+        $this->assertStringNotContainsString(self::SENTINEL, $response->getContent());
+        $this->assertStringNotContainsString(self::SENTINEL, (string) json_encode(session()->all()));
+        $this->assertArrayNotHasKey('license_key', (array) session()->getOldInput());
+    }
+
+    public function test_key_echoing_rejection_message_is_redacted_before_it_reaches_callers(): void
+    {
+        // The envelope metadata is unsigned; the server flips it to a
+        // key-echoing rejection while the (signed) data still verifies. The
+        // Activator must scrub the message before it becomes an
+        // ActivationResult message or a log line.
+        $envelope = $this->signedEnvelope([
+            'license_id' => 'lic_nd_echo',
+            'status' => 'active',
+            'product_code' => 'test-product',
+            'expires_at' => now()->addYear()->toIso8601String(),
+            'checked_at' => now()->toIso8601String(),
+        ]);
+        $envelope['success'] = false;
+        $envelope['status'] = 'error';
+        $envelope['message'] = 'License key '.self::SENTINEL.' is not valid for this product.';
+
+        Http::fake(['*/api/v1/license/activate' => Http::response($envelope)]);
+
+        $result = null;
+        $logs = $this->captureLogs(function () use (&$result) {
+            $result = $this->app->make(LicenseClientInterface::class)->activate(self::SENTINEL);
+        });
+
+        $this->assertFalse($result->success);
+        $this->assertStringNotContainsString(self::SENTINEL, (string) $result->message);
+        $this->assertStringNotContainsString(self::SENTINEL, $logs);
+    }
 }

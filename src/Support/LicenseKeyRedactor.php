@@ -10,9 +10,11 @@ namespace CoreVisys\License\Support;
  * flash. This class is the single place that produces the *safe* form of a
  * key. Two primitives are offered:
  *
- *  - {@see self::mask()} — a display-safe, partially-masked representation
- *    (e.g. "ABCD…WXYZ") for human-facing output where a little context helps.
- *  - {@see self::fingerprint()} — a short, one-way, per-install hash for
+ *  - {@see self::mask()} — a display-safe representation that reveals ONLY the
+ *    last four characters, and only for keys long enough (>= 16 chars) that
+ *    the prefix cannot be reconstructed. No prefix/leading characters are ever
+ *    shown. Short, empty, or null keys are fully withheld.
+ *  - {@see self::fingerprint()} — a short, one-way, per-install HMAC for
  *    correlating events across log lines without ever exposing the key.
  *
  * The raw key must never be reconstructed or derived from either output.
@@ -22,13 +24,15 @@ final class LicenseKeyRedactor
     /** Placeholder used when a value is wholly withheld. */
     public const REDACTED = '[redacted]';
 
-    /** Minimum length before any prefix/suffix is shown (shorter keys are fully masked). */
-    private const MIN_VISIBLE_LENGTH = 12;
+    /** Minimum length before the trailing four characters may be shown. */
+    private const MIN_VISIBLE_LENGTH = 16;
 
     /**
-     * Partial mask: the first and last four characters of a long key, or a
-     * full redaction for short/empty keys. Never reveals enough of the key to
-     * be usable.
+     * Partial mask: for a key of at least {@see self::MIN_VISIBLE_LENGTH}
+     * characters, reveal ONLY the final four characters (prefixed with an
+     * ellipsis). Everything shorter — and every null/empty value — is fully
+     * redacted. The leading characters are never shown, and the function never
+     * throws.
      */
     public static function mask(?string $key): string
     {
@@ -40,37 +44,43 @@ final class LicenseKeyRedactor
             return self::REDACTED;
         }
 
-        return substr($key, 0, 4).'…'.substr($key, -4);
+        return '…'.substr($key, -4);
     }
 
-    public static function fingerprint(?string $key, ?string $salt = null): ?string
+    /**
+     * A one-way fingerprint of the key: HMAC-SHA256 keyed by the application
+     * key (APP_KEY), truncated to 12 hex characters. Passing an explicit
+     * secret overrides the application key (used in tests and for isolation).
+     */
+    public static function fingerprint(?string $key, ?string $secret = null): ?string
     {
         if ($key === null || $key === '') {
             return null;
         }
 
-        $salt ??= self::installSalt();
+        $secret ??= self::appKeySecret();
 
-        return substr(hash_hmac('sha256', $key, $salt), 0, 16);
+        return substr(hash_hmac('sha256', $key, $secret), 0, 12);
     }
 
     /**
-     * A per-install salt so the same key produces a different fingerprint on
-     * different installs (defeating cross-install correlation and precomputed
-     * lookup tables). Falls back to a static salt only when APP_KEY is absent.
+     * The application key (APP_KEY) used as the HMAC secret, so the same key
+     * produces a different fingerprint on different installs (defeating
+     * cross-install correlation and precomputed lookup tables). Falls back to a
+     * static secret only when APP_KEY is absent.
      */
-    private static function installSalt(): string
+    private static function appKeySecret(): string
     {
         try {
             if (function_exists('config')) {
                 $appKey = config('app.key');
 
                 if (is_string($appKey) && $appKey !== '') {
-                    return 'corevisys-license:'.$appKey;
+                    return $appKey;
                 }
             }
         } catch (\Throwable) {
-            // fall through to the static salt
+            // fall through to the static secret
         }
 
         return 'corevisys-license';

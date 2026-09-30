@@ -40,6 +40,15 @@ class LicenseVerifier
      */
     private const FALLBACK_VERSION = '1.0.0';
 
+    /**
+     * Tolerance for a last_successful_check_at that appears slightly in the
+     * future (clock skew between the app host and the DB/cache host). Anything
+     * beyond this is treated as a forward-dated tamper and fails the offline
+     * path closed, so the local grace window can never be renewed by editing
+     * the row.
+     */
+    private const LAST_CHECK_FUTURE_SKEW_SECONDS = 300;
+
     /** Memoized result of {@see packageVersion()}. */
     private ?string $resolvedPackageVersion = null;
 
@@ -102,16 +111,20 @@ class LicenseVerifier
         } catch (LicenseServerUnavailableException $e) {
             // Connectivity/rate-limit/5xx failures are transient — these are
             // the only cases allowed to fall back to a still-valid cache.
+            $this->log('error', 'CoreVisys license: license server unavailable.', $e, [
+                'reason_code' => 'license_server_unavailable',
+                'product_code' => $this->productCode,
+            ], [$licenseKey]);
             Event::dispatch(new LicenseServerUnavailableEvent(null, [
                 'reason_code' => 'license_server_unavailable',
-                'message' => LogSanitizer::scrubMessage($e->getMessage()),
+                'message' => LogSanitizer::scrubMessage($e->getMessage(), [$licenseKey]),
             ]));
 
-            return $this->fallbackToCache($cached, $e->getMessage());
+            return $this->fallbackToCache($cached, $e->getMessage(), [$licenseKey]);
         } catch (SignatureVerificationException $e) {
-            $this->log('warning', 'CoreVisys license: signature verification failed.', $e, [
-                'reason_code' => 'signature_verification_failed',
-            ]);
+            $this->log('error', 'CoreVisys license: signature verification failed.', $e, [
+                'reason_code' => $this->signatureFailureReason($e),
+            ], [$licenseKey]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => 'signature_verification_failed']));
 
             // A response we cannot trust is treated as no response at all —
@@ -125,10 +138,10 @@ class LicenseVerifier
             // callers always get a LicenseStatus and can inspect ->status.
             $this->log('warning', 'CoreVisys license: check request rejected.', $e, [
                 'reason_code' => $e->errorCode(),
-            ]);
+            ], [$licenseKey]);
             $this->storage->put($this->productCode, [
                 'last_error_at' => now(),
-                'last_error_message' => LogSanitizer::scrubMessage($e->getMessage()),
+                'last_error_message' => LogSanitizer::scrubMessage($e->getMessage(), [$licenseKey]),
             ]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => $e->errorCode()]));
 
@@ -150,6 +163,11 @@ class LicenseVerifier
      *  3. When the signed payload carries offline_valid_until and it is in the
      *     past, the record is due regardless of next_check_at — an edited
      *     next_check_at can never extend trust beyond the signed boundary.
+     *  4. A verified ACTIVE payload must carry a signed offline_valid_until that
+     *     is still in the future. The unsigned offline_valid_until column is
+     *     NEVER consulted, and an active payload with a null/absent signed
+     *     boundary is not served from cache (A6) — it takes the normal path.
+     *     Non-active statuses keep their previous behaviour.
      *
      * Returns null to mean "treat as due / take the normal path".
      *
@@ -163,25 +181,35 @@ class LicenseVerifier
             return null;
         }
 
-        // (3) The signed offline boundary (when present) caps the fast path:
-        // once it has passed the record must be re-checked online, even if the
-        // unsigned next_check_at still claims it is not due. When the field is
-        // absent (legacy rows) the previous behaviour is preserved.
+        // The signed payload is the ONLY source of the offline boundary; the
+        // unsigned offline_valid_until column is never consulted here.
         $signedOfflineUntil = $this->parseDate($data['offline_valid_until'] ?? null);
 
+        // (3) A signed boundary that has already passed forces an online
+        // re-check, even when the unsigned next_check_at still claims the
+        // record is not due — an edited next_check_at can never extend trust
+        // beyond the signed boundary.
         if ($signedOfflineUntil !== null && $signedOfflineUntil->isPast()) {
             return null;
         }
 
-        // (2) Status, expiry and the reported boundary come from the *verified*
-        // payload, never the unsigned columns — the signed payload wins.
-        $record = $cached;
-        $record['status'] = (string) ($data['status'] ?? 'unknown');
-        $record['expires_at'] = $this->parseDate($data['expires_at'] ?? null);
+        $status = (string) ($data['status'] ?? 'unknown');
 
-        if (array_key_exists('offline_valid_until', $data)) {
-            $record['offline_valid_until'] = $signedOfflineUntil;
+        // (4) A verified ACTIVE payload with no signed offline boundary cannot
+        // be trusted from cache alone (A6): take the normal online path. A
+        // non-active status (suspended, revoked, expired, ...) keeps its
+        // previous behaviour and is returned as-is (invalid) without a round
+        // trip.
+        if ($signedOfflineUntil === null && $status === 'active') {
+            return null;
         }
+
+        // (2) Status, expiry, the reported boundary AND every signed entitlement
+        // field (license_id, license_type, product_code, features,
+        // is_grace_period) come from the *verified* payload, never the unsigned
+        // columns — the signed payload wins. A field absent from the payload
+        // resolves to null/empty, never the column.
+        $record = $this->applySignedEntitlements($cached, $data);
 
         $resolved = $this->statusFromCacheRecord($record, offline: false, alreadyValidated: false);
 
@@ -308,32 +336,40 @@ class LicenseVerifier
         return $status;
     }
 
-    protected function fallbackToCache(?array $cached, string $errorMessage): LicenseStatus
+    protected function fallbackToCache(?array $cached, string $errorMessage, array $knownSecrets = []): LicenseStatus
     {
         $this->storage->put($this->productCode, [
             'last_error_at' => now(),
-            'last_error_message' => LogSanitizer::scrubMessage($errorMessage),
+            'last_error_message' => LogSanitizer::scrubMessage($errorMessage, $knownSecrets),
         ]);
 
         if (! $cached || ! ($this->config['allow_offline_verification'] ?? true)) {
             return LicenseStatus::invalid('license_server_unavailable');
         }
 
-        if (! $this->withinGracePeriod($cached)) {
-            $this->log('warning', 'CoreVisys license: offline grace window has expired.', null, $this->recordContext($cached, 'grace_period_expired'));
+        // The offline rule (A6) is evaluated against the VERIFIED signed
+        // payload ONLY. The unsigned cache columns never carry or extend
+        // trust: a hand-edited status, expires_at or offline_valid_until
+        // cannot widen the offline window or flip an invalid license to valid.
+        $record = $this->trustedOfflineRecord($cached);
 
-            return LicenseStatus::invalid('grace_period_expired');
-        }
+        if ($record === null) {
+            // Distinguish the two operator-visible cases WITHOUT trusting the
+            // unsigned columns: a still-verifiable signed payload whose windows
+            // have closed is a lapsed grace/offline window; anything else is a
+            // tampered or unverifiable cache.
+            if ($this->verifiedSignedPayload($cached) !== null) {
+                $this->log('warning', 'CoreVisys license: offline grace window has expired.', null, $this->recordContext($cached, 'grace_period_expired'));
 
-        // Re-verify the cached signed payload; a manually edited row must
-        // never be trusted even inside the grace window.
-        if (! $this->cachedSignatureStillValid($cached)) {
+                return LicenseStatus::invalid('grace_period_expired');
+            }
+
             return LicenseStatus::invalid('tampered_cache');
         }
 
         $this->log('warning', 'CoreVisys license: serving a cached license within the offline grace window.', null, $this->recordContext($cached, 'grace_period_active'));
 
-        return $this->statusFromCacheRecord($cached, offline: true, alreadyValidated: true);
+        return $this->statusFromCacheRecord($record, offline: true, alreadyValidated: true);
     }
 
     /**
@@ -352,33 +388,121 @@ class LicenseVerifier
         ];
     }
 
-    protected function cachedSignatureStillValid(array $cached): bool
+    /**
+     * Apply the full frozen offline rule (A6) to a cached record and return a
+     * copy whose status, expiry and offline boundary come from the VERIFIED
+     * signed payload — or null when any condition fails.
+     *
+     * Conditions (all required):
+     *  1. The cached signed payload still verifies against LOCAL key material
+     *     (no network refresh) — a cold key cache, an unknown/revoked key_id,
+     *     or a tampered payload fails closed.
+     *  2. The signed payload carries offline_valid_until in the future.
+     *  3. The signed expires_at is absent, or in the future.
+     *  4. The local grace window (grace_period hours from the last successful
+     *     check) has not expired. It can only shorten the boundary, never
+     *     extend it.
+     *
+     * The unsigned cache columns are never read here.
+     *
+     * @param  array<string, mixed>  $cached
+     * @return array<string, mixed>|null
+     */
+    protected function trustedOfflineRecord(array $cached): ?array
     {
-        if (empty($cached['signed_payload']) || empty($cached['signature']) || empty($cached['key_id'])) {
-            return false;
+        $data = $this->verifiedSignedPayload($cached);
+
+        if ($data === null) {
+            return null;
         }
 
-        $data = json_decode($cached['signed_payload'], true);
+        $expiresAt = $this->parseDate($data['expires_at'] ?? null);
+        $offlineUntil = $this->parseDate($data['offline_valid_until'] ?? null);
 
-        if (! is_array($data)) {
-            return false;
+        // (2) A signed boundary in the past — or absent — means no offline
+        // trust; the unsigned offline_valid_until column is never consulted.
+        if ($offlineUntil === null || $offlineUntil->isPast()) {
+            return null;
         }
 
-        $reconstructed = LicenseResponse::fromArray([
-            'success' => true,
-            'status' => 'success',
-            'data' => $data,
-            'signature' => $cached['signature'],
-            'key_id' => $cached['key_id'],
-        ]);
-
-        try {
-            $this->signatureVerifier->verify($reconstructed);
-
-            return true;
-        } catch (SignatureVerificationException) {
-            return false;
+        // (3) A signed expiry in the past is not rescued by the offline window.
+        if ($expiresAt !== null && $expiresAt->isPast()) {
+            return null;
         }
+
+        // (4) The local grace window, anchored to the last successful check,
+        // must still be open. It can only shorten the boundary above.
+        if (empty($cached['last_successful_check_at'])) {
+            return null;
+        }
+
+        $lastCheck = Carbon::parse($cached['last_successful_check_at']);
+
+        // A future-dated last_successful_check_at (clock tamper, or a forward
+        // skew beyond a small tolerance) would otherwise push the grace
+        // window's end indefinitely into the future. Reject it: the window may
+        // only ever shorten the signed boundary, never be renewed by editing
+        // the row.
+        if ($lastCheck->isAfter(now()->addSeconds(self::LAST_CHECK_FUTURE_SKEW_SECONDS))) {
+            return null;
+        }
+
+        $graceHours = (int) ($this->config['grace_period'] ?? 72);
+
+        if ($lastCheck->copy()->addHours($graceHours)->isPast()) {
+            return null;
+        }
+
+        // Overlay every SIGNED field (status, expiry, boundary, license_id,
+        // license_type, product_code, features, is_grace_period) from the
+        // verified payload; the unsigned columns never decide entitlement.
+        return $this->applySignedEntitlements($cached, $data);
+    }
+
+    /**
+     * Overlay the SIGNED data fields onto a cache record so the unsigned
+     * columns can never supply (or withhold) entitlement. A field absent from
+     * the signed payload resolves to null/empty, never the column.
+     *
+     * Signed fields (frozen contract A2): status, license_id, product_code,
+     * license_type, expires_at, features, issued_at, offline_valid_until,
+     * is_grace_period.
+     *
+     * @param  array<string, mixed>  $record
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function applySignedEntitlements(array $record, array $data): array
+    {
+        $record['status'] = (string) ($data['status'] ?? 'unknown');
+        $record['expires_at'] = $this->parseDate($data['expires_at'] ?? null);
+        $record['offline_valid_until'] = $this->parseDate($data['offline_valid_until'] ?? null);
+        $record['issued_at'] = $this->parseDate($data['issued_at'] ?? null);
+        $record['license_id'] = $data['license_id'] ?? null;
+        $record['license_type'] = $data['license_type'] ?? null;
+        $record['product_code'] = $data['product_code'] ?? $this->productCode;
+        $record['features'] = $this->normalizeFeatures($data['features'] ?? null);
+        $record['is_grace_period'] = (bool) ($data['is_grace_period'] ?? false);
+
+        return $record;
+    }
+
+    /**
+     * Coerce a signed features value to an array. Accepts an array as-is, a
+     * JSON string (decoded), or anything else (empty array). Never falls back
+     * to the unsigned column.
+     *
+     * @return array<int, mixed>
+     */
+    protected function normalizeFeatures(mixed $features): array
+    {
+        if (is_string($features)) {
+            $decoded = json_decode($features, true);
+
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return is_array($features) ? $features : [];
     }
 
     protected function isDue(array $cached): bool
@@ -388,25 +512,6 @@ class LicenseVerifier
         }
 
         return Carbon::parse($cached['next_check_at'])->isPast();
-    }
-
-    protected function withinGracePeriod(array $cached): bool
-    {
-        if (empty($cached['offline_valid_until']) || Carbon::parse($cached['offline_valid_until'])->isPast()) {
-            return false;
-        }
-
-        if (! empty($cached['expires_at']) && Carbon::parse($cached['expires_at'])->isPast()) {
-            return false;
-        }
-
-        if (empty($cached['last_successful_check_at'])) {
-            return false;
-        }
-
-        $graceHours = (int) ($this->config['grace_period'] ?? 72);
-
-        return Carbon::parse($cached['last_successful_check_at'])->addHours($graceHours)->isFuture();
     }
 
     protected function statusFromCacheRecord(array $cached, bool $offline, bool $alreadyValidated): LicenseStatus
@@ -493,21 +598,49 @@ class LicenseVerifier
     }
 
     /**
-     * @param  array<string, mixed>  $context
+     * Classify a signature-verification failure for the log's reason_code.
+     * The returned LicenseStatus is still the generic
+     * 'signature_verification_failed' (Section A) — only the log context
+     * distinguishes an unknown / revoked key_id for operators.
      */
-    protected function log(string $level, string $message, ?\Throwable $e = null, array $context = []): void
+    protected function signatureFailureReason(SignatureVerificationException $e): string
+    {
+        $message = strtolower($e->getMessage());
+
+        if (str_contains($message, 'revoked')) {
+            return 'revoked_key_id';
+        }
+
+        if (str_contains($message, 'public key') || str_contains($message, 'key identifier')) {
+            return 'unknown_key_id';
+        }
+
+        return 'signature_verification_failed';
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  array<int, string|null>  $knownSecrets  Raw secrets guaranteed to be
+     *                                                 sensitive; supplied by the caller
+     *                                                 that knows the submitted key, so a
+     *                                                 key-bearing lower-layer message is
+     *                                                 stripped even when shorter than the
+     *                                                 token heuristic. Default [] leaves
+     *                                                 every existing caller unchanged.
+     */
+    protected function log(string $level, string $message, ?\Throwable $e = null, array $context = [], array $knownSecrets = []): void
     {
         if (! ($this->config['logging']['enabled'] ?? true)) {
             return;
         }
 
         if ($e !== null) {
-            $context['error'] = $e->getMessage();
+            $context['error'] = LogSanitizer::scrubMessage($e->getMessage(), $knownSecrets);
         }
 
         Log::channel($this->config['logging']['channel'] ?? 'stack')->{$level}(
-            LogSanitizer::scrubMessage($message),
-            LogSanitizer::scrubContext($context)
+            LogSanitizer::scrubMessage($message, $knownSecrets),
+            LogSanitizer::scrubContext($context, $knownSecrets)
         );
     }
 }

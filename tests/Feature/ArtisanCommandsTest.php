@@ -90,6 +90,51 @@ class ArtisanCommandsTest extends TestCase
         $this->assertNull($storage->get('test-product'));
     }
 
+    public function test_activate_command_prompts_for_a_hidden_key_and_does_not_print_it(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/activate' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_prompt',
+                'status' => 'active',
+                'product_code' => 'test-product',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $sentinel = 'SENTINEL-PROMPT-KEY-2f8a1c3d';
+
+        // No 'key' argument: the command must fall back to the hidden secret()
+        // prompt, and neither the prompt nor the result may print the key.
+        $this->artisan('corevisys:license:activate')
+            ->expectsQuestion('License key (input is hidden)', $sentinel)
+            ->doesntExpectOutputToContain($sentinel)
+            ->assertExitCode(0);
+    }
+
+    public function test_activate_command_does_not_print_a_key_echoing_server_message(): void
+    {
+        // The server returns a signed-but-rejected envelope whose (unsigned)
+        // message echoes the submitted key. It must not reach the terminal.
+        $envelope = $this->signedEnvelope([
+            'license_id' => 'lic_cmd_echo',
+            'status' => 'active',
+            'product_code' => 'test-product',
+            'expires_at' => now()->addYear()->toIso8601String(),
+            'checked_at' => now()->toIso8601String(),
+        ]);
+        $envelope['success'] = false;
+        $envelope['status'] = 'error';
+        $envelope['message'] = 'License key SENTINEL-CMD-KEY-7d1e4f22 is not valid.';
+
+        Http::fake(['*/api/v1/license/activate' => Http::response($envelope)]);
+
+        $this->artisan('corevisys:license:activate', ['key' => 'SENTINEL-CMD-KEY-7d1e4f22'])
+            ->doesntExpectOutputToContain('SENTINEL-CMD-KEY-7d1e4f22')
+            ->assertExitCode(1);
+    }
+
     public function test_deactivate_command_clears_cache_and_calls_server(): void
     {
         Http::fake([

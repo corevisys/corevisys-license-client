@@ -65,6 +65,9 @@ final class ConfigValidator
             self::gracePeriodError($config),
             self::cacheDriverError($config),
             self::fallbackStoreError($config, $availableCacheStores),
+            self::excludedRoutesError($config),
+            self::notificationChannelsError($config),
+            self::notificationThrottleError($config),
         ] as $error) {
             if ($error !== null) {
                 $errors[] = $error;
@@ -178,7 +181,7 @@ final class ConfigValidator
                 // without editing the config. Only a deliberately-set fallback
                 // that matches the primary store is an error.
                 $isPackagedDefault = $fallback === self::PACKAGED_DEFAULT_FALLBACK_STORE
-                    && ! self::hasExplicitFallbackSetting();
+                    && ! self::hasExplicitFallbackSetting($config);
 
                 if (! $isPackagedDefault) {
                     return 'The license cache_fallback_store must differ from the primary cache store when cache_driver is "cache".';
@@ -189,23 +192,131 @@ final class ConfigValidator
         return null;
     }
 
+    /**
+     * middleware.excluded_routes, when present, must be a flat list of
+     * non-empty strings (route names and/or Str::is patterns). An absent,
+     * null or empty-list value is valid: the middleware falls back to its
+     * documented defaults, so "empty" can never be mistaken for "exclude
+     * everything". The message names the offending TYPE only and never prints
+     * a route value — kept deliberately generic so no config data leaks.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function excludedRoutesError(array $config): ?string
+    {
+        $middleware = $config['middleware'] ?? null;
+
+        if ($middleware === null) {
+            return null; // middleware block absent — defaults apply
+        }
+
+        if (! is_array($middleware)) {
+            return 'The license middleware configuration must be an array.';
+        }
+
+        $excluded = $middleware['excluded_routes'] ?? null;
+
+        if ($excluded === null) {
+            return null; // absent/null — documented defaults apply
+        }
+
+        if (! is_array($excluded)) {
+            return 'The license middleware.excluded_routes must be an array of route-name or path-pattern strings.';
+        }
+
+        foreach ($excluded as $entry) {
+            if (! is_string($entry) || trim($entry) === '') {
+                return 'The license middleware.excluded_routes must contain only non-empty route-name or path-pattern strings.';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Notification channels, when configured, must be a subset of the allowed
+     * set. An empty / absent list is valid (it means "use the default").
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function notificationChannelsError(array $config): ?string
+    {
+        $notifications = $config['notifications'] ?? null;
+
+        if ($notifications === null) {
+            return null; // notifications block absent — nothing to validate
+        }
+
+        if (! is_array($notifications)) {
+            return 'The license notifications configuration must be an array.';
+        }
+
+        $channels = $notifications['channels'] ?? [];
+
+        if (! is_array($channels)) {
+            return 'The license notifications.channels must be an array of channel names.';
+        }
+
+        if ($channels === []) {
+            return null; // empty = default ['log']
+        }
+
+        $allowed = ['log', 'mail'];
+
+        foreach ($channels as $channel) {
+            if (! is_string($channel) || ! in_array($channel, $allowed, true)) {
+                return 'The license notifications.channels may only contain: log, mail.';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The notification throttle interval, when set, must be a non-negative
+     * whole number of seconds. Absent / empty is valid (default applies).
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function notificationThrottleError(array $config): ?string
+    {
+        $notifications = $config['notifications'] ?? null;
+
+        if (! is_array($notifications)) {
+            return null; // reported by the channels check
+        }
+
+        $throttle = $notifications['throttle_interval'] ?? null;
+
+        if ($throttle === null || (is_string($throttle) && trim($throttle) === '')) {
+            return null; // default applies
+        }
+
+        if (! self::isIntegerLike($throttle)) {
+            return 'The license notifications.throttle_interval must be a non-negative whole number of seconds.';
+        }
+
+        if ((int) $throttle < 0) {
+            return 'The license notifications.throttle_interval must not be negative.';
+        }
+
+        return null;
+    }
+
     /** The fallback store name shipped as the packaged default. */
     private const PACKAGED_DEFAULT_FALLBACK_STORE = 'file';
 
     /**
-     * Whether the application actually set COREVISYS_LICENSE_CACHE_FALLBACK_STORE.
-     * Reads the raw env only to distinguish "packaged default" from "explicitly
-     * configured" — never to obtain a secret.
+     * Whether the application explicitly set COREVISYS_LICENSE_CACHE_FALLBACK_STORE.
+     * Reads the cache-safe config flag derived at config-build time (never an
+     * environment lookup at runtime, which is null once the config is cached) —
+     * the flag is a boolean presence signal, never a secret value.
+     *
+     * @param  array<string, mixed>  $config
      */
-    private static function hasExplicitFallbackSetting(): bool
+    private static function hasExplicitFallbackSetting(array $config): bool
     {
-        try {
-            $value = function_exists('env') ? env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') : null;
-
-            return $value !== null && $value !== '';
-        } catch (\Throwable) {
-            return false;
-        }
+        return ($config['cache_fallback_store_explicit'] ?? false) === true;
     }
 
     /**

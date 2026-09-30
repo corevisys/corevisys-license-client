@@ -19,6 +19,7 @@ use CoreVisys\License\Services\FingerprintGenerator;
 use CoreVisys\License\Services\LicenseActivator;
 use CoreVisys\License\Services\LicenseClient;
 use CoreVisys\License\Services\LicenseHeartbeat;
+use CoreVisys\License\Services\LicenseNotifier;
 use CoreVisys\License\Services\LicenseStorage;
 use CoreVisys\License\Services\LicenseVerifier;
 use CoreVisys\License\Services\SignedPayloadVerifier;
@@ -86,6 +87,10 @@ class CoreVisysServiceProvider extends ServiceProvider
                 productCode: (string) $app['config']->get('corevisys-license.product_code'),
                 config: $app['config']->get('corevisys-license'),
             );
+        });
+
+        $this->app->singleton(LicenseNotifier::class, function ($app) {
+            return new LicenseNotifier((array) $app['config']->get('corevisys-license', []));
         });
 
         $this->app->singleton(LicenseHeartbeat::class, function ($app) {

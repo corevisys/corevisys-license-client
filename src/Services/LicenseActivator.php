@@ -48,7 +48,7 @@ class LicenseActivator
 
             if (! $response->success || ! $status->isActive()) {
                 return ActivationResult::failure(
-                    $response->message ?? 'Activation was rejected by the server.',
+                    $this->safeServerMessage($response->message, $licenseKey) ?? 'Activation was rejected by the server.',
                     'activation_rejected'
                 );
             }
@@ -75,13 +75,25 @@ class LicenseActivator
                 'last_error_message' => null,
             ]);
 
+            // Structured success log (context only — never the raw key).
+            $this->log('info', 'CoreVisys license: activated successfully.', [
+                'license_id' => $status->licenseId,
+                'product_code' => $this->productCode,
+                'key_id' => $response->keyId,
+                'reason_code' => 'license_activated',
+            ]);
+
             Event::dispatch(new LicenseActivated($status));
 
-            return ActivationResult::success($response->message ?? 'License activated successfully.', $status);
+            return ActivationResult::success($this->safeServerMessage($response->message, $licenseKey) ?? 'License activated successfully.', $status);
         } catch (LicenseClientException $e) {
             // Diagnostic detail is logged (redacted) but the value returned to
-            // callers is a generic, key-free message.
-            $safeMessage = LogSanitizer::scrubMessage($e->getMessage());
+            // callers is a generic, key-free message. The submitted key is
+            // passed as a known secret so even a short key echoed back by a
+            // lower layer (a server validation body, a transport exception) is
+            // stripped from BOTH the stored error and the log context.
+            $knownSecret = array_filter([$licenseKey]);
+            $safeMessage = LogSanitizer::scrubMessage($e->getMessage(), $knownSecret);
 
             $this->storage->put($this->productCode, [
                 'last_error_at' => now(),
@@ -92,7 +104,7 @@ class LicenseActivator
                 'reason_code' => $e->errorCode(),
                 'product_code' => $this->productCode,
                 'error' => $e->getMessage(),
-            ]);
+            ], $knownSecret);
 
             return ActivationResult::failure(
                 'Activation failed. Please check the key and try again.',
@@ -102,17 +114,35 @@ class LicenseActivator
     }
 
     /**
-     * @param  array<string, mixed>  $context
+     * Scrub a server-supplied envelope message before it can reach any caller
+     * (command output, controller flash, or any ActivationResult consumer).
+     * The server may echo the submitted key back in its validation text, so
+     * the key is passed as a known secret; long opaque tokens and email
+     * addresses are removed as well. Returns null for null/empty input so the
+     * caller's generic fallback message applies.
      */
-    protected function log(string $level, string $message, array $context = []): void
+    protected function safeServerMessage(?string $message, ?string $knownSecret = null): ?string
+    {
+        if ($message === null || $message === '') {
+            return null;
+        }
+
+        return LogSanitizer::scrubMessage($message, array_filter([$knownSecret]));
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  array<int, string|null>  $knownSecrets
+     */
+    protected function log(string $level, string $message, array $context = [], array $knownSecrets = []): void
     {
         if (! config('corevisys-license.logging.enabled', true)) {
             return;
         }
 
         Log::channel(config('corevisys-license.logging.channel', 'stack'))->{$level}(
-            LogSanitizer::scrubMessage($message),
-            LogSanitizer::scrubContext($context)
+            LogSanitizer::scrubMessage($message, $knownSecrets),
+            LogSanitizer::scrubContext($context, $knownSecrets)
         );
     }
 

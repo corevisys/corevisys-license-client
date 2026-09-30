@@ -8,6 +8,36 @@
 $unset = static fn (mixed $value, mixed $default): mixed
     => \CoreVisys\License\Support\ConfigDefaults::normalize($value, $default);
 
+/*
+| Parse a comma-separated env string (or an array) into a clean list of
+| non-empty string values. An empty/unset value yields an empty array so the
+| caller can apply a documented default.
+*/
+$list = static function (mixed $value): array {
+    if ($value === null || $value === '') {
+        return [];
+    }
+    if (is_array($value)) {
+        $parts = $value;
+    } elseif (is_string($value)) {
+        $parts = explode(',', $value);
+    } else {
+        return [];
+    }
+    $parts = array_map(static fn ($v) => is_string($v) ? trim($v) : $v, $parts);
+
+    return array_values(array_filter($parts, static fn ($v) => is_string($v) && $v !== ''));
+};
+
+/*
+| Whether the operator actually set the fallback store env var to a non-empty
+| value. Captured HERE, at config-build time, so it survives `config:cache`:
+| once the config is cached, `.env` is not loaded and a runtime env() read
+| would always return null. Consumers read the flag, never the environment.
+*/
+$fallbackStoreExplicit = env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') !== null
+    && env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') !== '';
+
 return [
 
     /*
@@ -204,6 +234,17 @@ return [
     'cache_fallback_store' => $unset(env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE'), 'file'),
 
     /*
+    | cache_fallback_store_explicit: true only when the operator actually set
+    |   COREVISYS_LICENSE_CACHE_FALLBACK_STORE to a non-empty value. Derived at
+    |   config-build time so it is cacheable — the runtime env() lookup is
+    |   unavailable under `php artisan config:cache`. Consumers use it to tell a
+    |   deliberately configured fallback apart from the packaged default.
+    |   Default: false | Env var: (derived — never read at runtime)
+    |   Production: do not set this key by hand; set the env var instead.
+    */
+    'cache_fallback_store_explicit' => $fallbackStoreExplicit,
+
+    /*
     | cache_key: cache-store key holding the signed license payload (cache mode).
     |   Default: corevisys.license.cache | Env: (none)
     |   Production: change only to avoid a collision; it is not a secret.
@@ -284,11 +325,41 @@ return [
     | middleware.bypass_in_local: skip enforcement when the app is local.
     |   Default: false | Env: COREVISYS_LICENSE_BYPASS_LOCAL
     |   Production: MUST remain false in production.
+    |
+    | middleware.excluded_routes: route names and/or path patterns that
+    |   corevisys.license lets through WITHOUT a license check (and without any
+    |   server call). Entries are matched with Laravel's Str::is() against EACH
+    |   route's name and its path, so an entry may be a route name ("login",
+    |   "corevisys.license.activate"), a literal path ("license/activate") or a
+    |   wildcard path ("admin/health/*"). This exists so an operator can never be
+    |   locked out: the activation screen, auth routes and health probes must stay
+    |   reachable while the license is invalid.
+    |   Default: the built-in activation routes plus the conventional
+    |     login/logout/health/up names AND paths. Empty or null means the same
+    |     defaults apply (see ConfigDefaults). Not environment-driven.
+    |   Production: add your own always-open routes (e.g. a status page or your
+    |     payment/checkout flow) here; keep the activation and auth routes listed
+    |     so a lapsed license can always be repaired. The activation route is
+    |     ALWAYS exempt regardless of this list (hard-coded guard in
+    |     EnsureValidLicense), so removing it can never create a redirect loop.
     */
     'middleware' => [
         'redirect_route' => null,
         'abort_status' => 403,
         'bypass_in_local' => env('COREVISYS_LICENSE_BYPASS_LOCAL', false),
+
+        'excluded_routes' => [
+            // Built-in activation screen — by route name (GET + POST) and by path.
+            'corevisys.license.activate',
+            'corevisys.license.activate.store',
+            'license/activate',
+            // Conventional auth/health routes — listed by name and by path so
+            // either form matches regardless of how the app names them.
+            'login',
+            'logout',
+            'health',
+            'up',
+        ],
     ],
 
     /*
@@ -327,6 +398,34 @@ return [
     'logging' => [
         'enabled' => env('COREVISYS_LICENSE_LOGGING', true),
         'channel' => env('COREVISYS_LICENSE_LOG_CHANNEL', 'stack'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Failure Notifications
+    |--------------------------------------------------------------------------
+    | Sent ONLY from the scheduled health check (corevisys:license:check) — never
+    | from the verifier, the middleware, or the request path. The Phase 5 spec's
+    | "log_channel" IS `logging.channel` above; there is no separate key.
+    |
+    | notifications.enabled: master switch. Default: false (notifications are
+    |   opt-in; the package only logs until an operator enables them).
+    |   Env: COREVISYS_LICENSE_NOTIFICATIONS
+    | notifications.channels: delivery channels. Allowed: log, mail. No other
+    |   channel (and no third-party notifier) is supported. Default: ['log'].
+    |   Env: COREVISYS_LICENSE_NOTIFICATION_CHANNELS (comma-separated)
+    | notifications.mail_recipients: recipients used when 'mail' is enabled.
+    |   Default: [] (none). Env: COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS
+    | notifications.throttle_interval: seconds between repeated notifications
+    |   for the SAME failure reason_code. Default: 3600. A value of 0 DISABLES
+    |   the throttle (every failure notifies), it does not suppress alerts.
+    |   Env: COREVISYS_LICENSE_NOTIFICATION_THROTTLE
+    */
+    'notifications' => [
+        'enabled' => env('COREVISYS_LICENSE_NOTIFICATIONS', false),
+        'channels' => ($list(env('COREVISYS_LICENSE_NOTIFICATION_CHANNELS')) ?: ['log']),
+        'mail_recipients' => $list(env('COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS')),
+        'throttle_interval' => env('COREVISYS_LICENSE_NOTIFICATION_THROTTLE', 3600),
     ],
 
 ];

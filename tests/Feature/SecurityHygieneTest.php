@@ -28,15 +28,6 @@ class SecurityHygieneTest extends TestCase
 
     private const PRODUCT = 'test-product';
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        // The 'file' fallback store (and its .gitignore'd directory) persists
-        // between runs; flush it so a stale record cannot mask a real failure.
-        CacheFacade::store('file')->flush();
-    }
-
     // ---------------------------------------------------------------------
     // 4B.2 — activation-page responses are non-cacheable
     // ---------------------------------------------------------------------

@@ -30,18 +30,6 @@ class LicenseStorageFallbackTest extends TestCase
     private const PRODUCT = 'test-product';
 
     /**
-     * The 'file' cache store persists on disk across tests, so an unisolated
-     * fallback could leak between cases (masking a real failure or producing a
-     * false pass). Flush it before every test.
-     */
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        CacheFacade::store('file')->flush();
-    }
-
-    /**
      * @param  array<string, mixed>  $overrides
      * @return array{0: array<string, mixed>, 1: array<string, mixed>}
      */

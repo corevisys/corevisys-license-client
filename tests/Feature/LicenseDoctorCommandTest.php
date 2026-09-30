@@ -97,4 +97,20 @@ class LicenseDoctorCommandTest extends TestCase
         $this->assertContains('last_successful_check_at', LicenseDoctorCommand::EXPECTED_COLUMNS);
         $this->assertContains('key_id', LicenseDoctorCommand::EXPECTED_COLUMNS);
     }
+
+    public function test_packaged_default_fallback_collision_is_reported_as_a_warning(): void
+    {
+        // Case (b): cache mode, no explicit cache_store, and the app default
+        // store coincidentally equals the packaged fallback default ("file").
+        // This is tolerated (no throw, exit 0) but must be surfaced as a
+        // warning that explains the fallback is effectively disabled.
+        config()->set('corevisys-license.cache_driver', 'cache');
+        config()->set('corevisys-license.cache_store', null);
+        config()->set('corevisys-license.cache_fallback_store', 'file');
+        config()->set('cache.default', 'file');
+
+        $this->artisan('corevisys:license:doctor')
+            ->expectsOutputToContain('effectively disabled')
+            ->assertExitCode(0);
+    }
 }
