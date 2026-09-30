@@ -84,7 +84,8 @@ Fresh post-fix automated baselines, rerun on 2026-09-20:
 
 ```text
 Client: vendor\bin\phpunit
-45 tests passed, 77 assertions
+119 tests passed, 276 assertions   (2026-09-29, after the config/storage-safety phases;
+                                    previously 84/205, then 63/106, then 46/81)
 
 Server: php artisan test
 110 tests passed, 398 assertions

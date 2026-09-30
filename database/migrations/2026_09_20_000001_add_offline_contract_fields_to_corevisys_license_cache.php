@@ -8,6 +8,8 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // Idempotent: each column is guarded, and if the base table does not
+        // exist yet we skip safely (the create migration has not run).
         if (! Schema::hasTable('corevisys_license_cache')) {
             return;
         }
@@ -27,6 +29,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        // DESTRUCTIVE: this drops the offline-contract columns and the data
+        // they hold (issued_at, offline_valid_until, is_grace_period). Guarded
+        // so a re-run or a missing table is a safe no-op. Never run on a live
+        // database without a backup.
         if (! Schema::hasTable('corevisys_license_cache')) {
             return;
         }

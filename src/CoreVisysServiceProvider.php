@@ -6,6 +6,7 @@ use CoreVisys\License\Commands\LicenseActivateCommand;
 use CoreVisys\License\Commands\LicenseCheckCommand;
 use CoreVisys\License\Commands\LicenseClearCacheCommand;
 use CoreVisys\License\Commands\LicenseDeactivateCommand;
+use CoreVisys\License\Commands\LicenseDoctorCommand;
 use CoreVisys\License\Commands\LicenseInstallCommand;
 use CoreVisys\License\Commands\LicenseStatusCommand;
 use CoreVisys\License\Contracts\LicenseClientInterface;
@@ -21,7 +22,10 @@ use CoreVisys\License\Services\LicenseHeartbeat;
 use CoreVisys\License\Services\LicenseStorage;
 use CoreVisys\License\Services\LicenseVerifier;
 use CoreVisys\License\Services\SignedPayloadVerifier;
+use CoreVisys\License\Support\CompatibilityChecker;
+use CoreVisys\License\Support\ConfigValidator;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 
@@ -30,8 +34,8 @@ class CoreVisysServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/corevisys-license.php', 'corevisys-license');
-        SignedPayloadVerifier::validateConfiguration(
-            (string) $this->app['config']->get('corevisys-license.signature.algorithm', 'rsa')
+        ConfigValidator::validate(
+            (array) $this->app['config']->get('corevisys-license', [])
         );
 
         $this->app->singleton(LicenseStorageInterface::class, function ($app) {
@@ -112,13 +116,17 @@ class CoreVisysServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $this->bootConfigVersionWarning();
+
         $this->publishes([
             __DIR__.'/../config/corevisys-license.php' => config_path('corevisys-license.php'),
         ], 'corevisys-license-config');
 
         $this->publishes([
-            __DIR__.'/../database/migrations/create_corevisys_license_cache_table.php' =>
-                database_path('migrations/'.date('Y_m_d_His', time()).'_create_corevisys_license_cache_table.php'),
+            __DIR__.'/../database/migrations/2026_01_01_000000_create_corevisys_license_cache_table.php' =>
+                database_path('migrations/2026_01_01_000000_create_corevisys_license_cache_table.php'),
+            __DIR__.'/../database/migrations/2026_09_20_000001_add_offline_contract_fields_to_corevisys_license_cache.php' =>
+                database_path('migrations/2026_09_20_000001_add_offline_contract_fields_to_corevisys_license_cache.php'),
         ], 'corevisys-license-migrations');
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
@@ -140,6 +148,7 @@ class CoreVisysServiceProvider extends ServiceProvider
                 LicenseActivateCommand::class,
                 LicenseCheckCommand::class,
                 LicenseDeactivateCommand::class,
+                LicenseDoctorCommand::class,
                 LicenseStatusCommand::class,
                 LicenseClearCacheCommand::class,
             ]);
@@ -221,5 +230,109 @@ class CoreVisysServiceProvider extends ServiceProvider
             $seconds <= 21600 => '0 */6 * * *', // every 6 hours
             default => '0 3 * * *', // daily at 03:00
         };
+    }
+
+    /**
+     * Non-throwing boot-time guard: compares the application's *published*
+     * config_version with the version this package expects. A mismatch (or a
+     * missing value in a published config) logs a warning and execution
+     * continues. Applications that never published the config are never
+     * warned, because the packaged default is already known to be correct.
+     */
+    protected function bootConfigVersionWarning(): void
+    {
+        try {
+            $this->verifyPublishedConfigVersion(
+                $this->configIsPublished(),
+                $this->publishedConfigVersion(),
+            );
+        } catch (\Throwable) {
+            // A version check must never prevent the app from booting.
+        }
+    }
+
+    /**
+     * @return bool true when a warning was emitted (i.e. a published config
+     *              was present and its version did not match the expectation).
+     */
+    public function verifyPublishedConfigVersion(bool $configPublished, mixed $publishedVersion): bool
+    {
+        if (! $configPublished) {
+            return false;
+        }
+
+        $expected = CompatibilityChecker::EXPECTED_CONFIG_VERSION;
+
+        if ($publishedVersion !== null && (int) $publishedVersion === $expected) {
+            return false;
+        }
+
+        $this->logWarning('CoreVisys license: config_version mismatch.', [
+            'expected' => $expected,
+            'actual' => $publishedVersion,
+        ]);
+
+        return true;
+    }
+
+    protected function logWarning(string $message, array $context = []): void
+    {
+        try {
+            if (! $this->app['config']->get('corevisys-license.logging.enabled', true)) {
+                return;
+            }
+
+            Log::channel($this->app['config']->get('corevisys-license.logging.channel', 'stack'))
+                ->warning($message, $context);
+        } catch (\Throwable) {
+            // A logging failure must never break boot.
+        }
+    }
+
+    /**
+     * Whether the application has published (or cached) its own config file.
+     * When it has not, the packaged defaults are in effect and there is
+     * nothing to warn about.
+     */
+    protected function configIsPublished(): bool
+    {
+        try {
+            if ($this->app->configurationIsCached()) {
+                return true;
+            }
+
+            return is_file(config_path('corevisys-license.php'));
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Reads the app's *raw* published config_version before the package's
+     * merge could mask a missing/different value. Returns null when it is
+     * absent (or the file cannot be read), which is treated as a mismatch.
+     */
+    protected function publishedConfigVersion(): ?int
+    {
+        try {
+            if ($this->app->configurationIsCached()) {
+                $value = $this->app['config']->get('corevisys-license.config_version');
+
+                return $value === null ? null : (int) $value;
+            }
+
+            $path = config_path('corevisys-license.php');
+
+            if (! is_file($path)) {
+                return null;
+            }
+
+            $config = require $path;
+            $value = is_array($config) ? ($config['config_version'] ?? null) : null;
+
+            return $value === null ? null : (int) $value;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

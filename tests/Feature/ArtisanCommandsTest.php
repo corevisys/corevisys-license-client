@@ -38,6 +38,26 @@ class ArtisanCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_activate_command_never_prints_the_raw_key(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/activate' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_cli_no_leak',
+                'status' => 'active',
+                'product_code' => 'test-product',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $sentinel = 'SENTINEL-CLI-KEY-9f3a2b7c';
+
+        $this->artisan('corevisys:license:activate', ['key' => $sentinel])
+            ->doesntExpectOutputToContain($sentinel)
+            ->assertExitCode(0);
+    }
+
     public function test_status_command_shows_no_cache_warning_when_never_activated(): void
     {
         $this->artisan('corevisys:license:status')

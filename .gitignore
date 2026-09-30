@@ -4,3 +4,16 @@
 .phpunit.result.cache
 composer.lock
 .DS_Store
+
+# Local environment files — never commit real secrets
+.env
+.env.*
+!.env.example
+
+# Private keys and secret material
+*.pem
+*.key
+
+# Local license file/cache storage (file-store fallback)
+/storage/corevisys/
+/storage/app/corevisys/

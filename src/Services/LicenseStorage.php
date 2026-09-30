@@ -3,20 +3,39 @@
 namespace CoreVisys\License\Services;
 
 use CoreVisys\License\Contracts\LicenseStorageInterface;
+use CoreVisys\License\Support\LogSanitizer;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Local persistence for verified license state and the cached CoreVisys
- * public key(s). Two backends are supported: "database" (the
+ * public key(s). Two primary backends are supported: "database" (the
  * corevisys_license_cache table) and "cache" (Laravel's cache store).
  * The license key itself is always stored encrypted and is never logged.
+ *
+ * Resilience: an optional secondary cache store (config cache_fallback_store)
+ * mirrors every write. Reads consult it ONLY when the primary store throws a
+ * connection/query error — a successful primary "not found" is authoritative
+ * and never falls back, so a stale mirror can never resurrect a deactivated or
+ * cleared license. Data read from the fallback is marked with
+ * {@see self::ORIGIN_MARKER} so the verifier applies the full frozen offline
+ * rule (A6) rather than the "fresh enough" fast path. The fallback is a storage
+ * location, never a trust shortcut.
  */
 class LicenseStorage implements LicenseStorageInterface
 {
     protected const TABLE = 'corevisys_license_cache';
+
+    /**
+     * Marks a record as having come from the fallback store. The name is
+     * deliberately backend-neutral: it is set on records read from ANY
+     * fallback, not only a Laravel cache store, and the verifier treats its
+     * presence as "apply the full frozen offline rule (A6)".
+     */
+    public const ORIGIN_MARKER = '__fallback_origin';
 
     public function __construct(protected array $config)
     {
@@ -24,9 +43,37 @@ class LicenseStorage implements LicenseStorageInterface
 
     public function get(string $productCode): ?array
     {
-        return $this->usingDatabase()
-            ? $this->getFromDatabase($productCode)
-            : $this->getFromCacheStore($productCode);
+        $primary = $this->primaryRecordTarget();
+
+        try {
+            // A primary that answers — even with "not found" — is authoritative.
+            return $this->readTarget($primary, $productCode);
+        } catch (\Throwable $e) {
+            $this->logStoreFailure('read', $e);
+        }
+
+        $fallback = $this->fallbackStoreName();
+
+        if ($fallback === null) {
+            return null;
+        }
+
+        try {
+            $record = $this->readTarget(['driver' => 'cache', 'store' => $fallback], $productCode);
+        } catch (\Throwable $e) {
+            $this->logStoreFailure('read', $e);
+
+            return null;
+        }
+
+        if ($record === null) {
+            return null;
+        }
+
+        $this->logFallbackUsed('read');
+        $record[self::ORIGIN_MARKER] = true;
+
+        return $record;
     }
 
     public function put(string $productCode, array $attributes): void
@@ -38,45 +85,77 @@ class LicenseStorage implements LicenseStorageInterface
             unset($attributes['license_key']);
         }
 
+        // Never persist the internal origin marker.
+        unset($attributes[self::ORIGIN_MARKER]);
+
         $attributes['product_code'] = $productCode;
         $attributes['last_checked_at'] = $attributes['last_checked_at'] ?? now();
 
-        if ($this->usingDatabase()) {
-            $this->putInDatabase($productCode, $attributes);
-        } else {
-            $this->putInCacheStore($productCode, $attributes);
+        try {
+            $this->writeTarget($this->primaryRecordTarget(), $productCode, $attributes);
+        } catch (\Throwable $e) {
+            $this->logStoreFailure('write', $e);
+        }
+
+        $fallback = $this->fallbackStoreName();
+
+        if ($fallback !== null) {
+            // The fallback is a plain mirror, not a secret store: strip any
+            // encryption ciphertext derived from the raw license key before it
+            // is written. The fallback record only ever carries the signed
+            // payload, so the offline rule (A6) can still run against it
+            // without persisting key material in a second location.
+            unset($attributes['encrypted_license_key']);
+
+            try {
+                $this->writeTarget(['driver' => 'cache', 'store' => $fallback], $productCode, $attributes);
+            } catch (\Throwable $e) {
+                $this->logStoreFailure('write', $e);
+            }
         }
     }
 
     public function forget(string $productCode): void
     {
-        if ($this->usingDatabase()) {
-            DB::table(self::TABLE)->where('product_code', $productCode)->delete();
-        } else {
-            Cache::store($this->cacheStoreName())->forget($this->cacheKey($productCode));
+        try {
+            $this->forgetTarget($this->primaryRecordTarget(), $productCode);
+        } catch (\Throwable $e) {
+            $this->logStoreFailure('forget', $e);
+        }
+
+        $fallback = $this->fallbackStoreName();
+
+        if ($fallback !== null) {
+            try {
+                $this->forgetTarget(['driver' => 'cache', 'store' => $fallback], $productCode);
+            } catch (\Throwable $e) {
+                $this->logStoreFailure('forget', $e);
+            }
         }
     }
 
     public function getPublicKey(string $keyId): ?string
     {
-        return Cache::store($this->cacheStoreName())->get($this->publicKeyCacheKey($keyId));
+        $value = $this->readCacheValue($this->publicKeyCacheKey($keyId));
+
+        return is_string($value) ? $value : null;
     }
 
     public function putPublicKey(string $keyId, string $publicKeyPem, int $ttlSeconds): void
     {
-        Cache::store($this->cacheStoreName())->put($this->publicKeyCacheKey($keyId), $publicKeyPem, $ttlSeconds);
+        $this->writeCacheValue($this->publicKeyCacheKey($keyId), $publicKeyPem, $ttlSeconds);
     }
 
     public function getPublicKeyMetadata(): ?array
     {
-        $metadata = Cache::store($this->cacheStoreName())->get($this->publicKeyMetadataCacheKey());
+        $metadata = $this->readCacheValue($this->publicKeyMetadataCacheKey());
 
         return is_array($metadata) ? $metadata : null;
     }
 
     public function putPublicKeyMetadata(array $metadata, int $ttlSeconds): void
     {
-        Cache::store($this->cacheStoreName())->put($this->publicKeyMetadataCacheKey(), $metadata, $ttlSeconds);
+        $this->writeCacheValue($this->publicKeyMetadataCacheKey(), $metadata, $ttlSeconds);
     }
 
     /**
@@ -102,9 +181,42 @@ class LicenseStorage implements LicenseStorageInterface
         return ($this->config['cache_driver'] ?? 'database') === 'database';
     }
 
+    /**
+     * The primary record target: the database table, or a cache store.
+     *
+     * @return array{driver: string, store: string|null}
+     */
+    protected function primaryRecordTarget(): array
+    {
+        return $this->usingDatabase()
+            ? ['driver' => 'database', 'store' => null]
+            : ['driver' => 'cache', 'store' => $this->cacheStoreName()];
+    }
+
+    /**
+     * The configured fallback cache store name, or null when disabled or when
+     * it would be identical to the primary store in 'cache' mode.
+     */
+    protected function fallbackStoreName(): ?string
+    {
+        $name = $this->config['cache_fallback_store'] ?? null;
+
+        if (! is_string($name) || trim($name) === '') {
+            return null;
+        }
+
+        if (! $this->usingDatabase() && $name === $this->cacheStoreName()) {
+            return null;
+        }
+
+        return $name;
+    }
+
     protected function cacheStoreName(): ?string
     {
-        return $this->config['cache_store'] ?? null;
+        $store = $this->config['cache_store'] ?? null;
+
+        return (is_string($store) && trim($store) !== '') ? $store : null;
     }
 
     protected function cacheKey(string $productCode): string
@@ -120,6 +232,100 @@ class LicenseStorage implements LicenseStorageInterface
     protected function publicKeyMetadataCacheKey(): string
     {
         return ($this->config['public_key_cache_key'] ?? 'corevisys.license.public_key').':metadata';
+    }
+
+    /**
+     * @param  array{driver: string, store: string|null}  $target
+     */
+    protected function readTarget(array $target, string $productCode): ?array
+    {
+        if ($target['driver'] === 'database') {
+            return $this->getFromDatabase($productCode);
+        }
+
+        $value = Cache::store($target['store'])->get($this->cacheKey($productCode));
+
+        return is_array($value) ? $value : null;
+    }
+
+    /**
+     * @param  array{driver: string, store: string|null}  $target
+     */
+    protected function writeTarget(array $target, string $productCode, array $attributes): void
+    {
+        if ($target['driver'] === 'database') {
+            $this->putInDatabase($productCode, $attributes);
+
+            return;
+        }
+
+        $this->putInCacheStore($target['store'], $productCode, $attributes);
+    }
+
+    /**
+     * @param  array{driver: string, store: string|null}  $target
+     */
+    protected function forgetTarget(array $target, string $productCode): void
+    {
+        if ($target['driver'] === 'database') {
+            DB::table(self::TABLE)->where('product_code', $productCode)->delete();
+
+            return;
+        }
+
+        Cache::store($target['store'])->forget($this->cacheKey($productCode));
+    }
+
+    /**
+     * Read a cache-backed value (public key / metadata) with fallback: the
+     * primary is tried first, then the fallback when the primary throws or has
+     * no value. Public keys are additive and still checked against the
+     * authoritative key metadata, so consulting the fallback on a miss is safe.
+     */
+    protected function readCacheValue(string $key): mixed
+    {
+        try {
+            $value = Cache::store($this->cacheStoreName())->get($key);
+
+            if ($value !== null) {
+                return $value;
+            }
+        } catch (\Throwable $e) {
+            $this->logStoreFailure('read', $e);
+        }
+
+        $fallback = $this->fallbackStoreName();
+
+        if ($fallback === null) {
+            return null;
+        }
+
+        try {
+            return Cache::store($fallback)->get($key);
+        } catch (\Throwable $e) {
+            $this->logStoreFailure('read', $e);
+
+            return null;
+        }
+    }
+
+    protected function writeCacheValue(string $key, mixed $value, int $ttlSeconds): void
+    {
+        try {
+            Cache::store($this->cacheStoreName())->put($key, $value, $ttlSeconds);
+        } catch (\Throwable $e) {
+            $this->logStoreFailure('write', $e);
+        }
+
+        $fallback = $this->fallbackStoreName();
+
+        if ($fallback !== null) {
+            try {
+                Cache::store($fallback)->put($key, $value, $ttlSeconds);
+            } catch (\Throwable $e) {
+                $this->logStoreFailure('write', $e);
+            }
+        }
     }
 
     protected function getFromDatabase(string $productCode): ?array
@@ -170,17 +376,55 @@ class LicenseStorage implements LicenseStorageInterface
         return $attributes;
     }
 
-    protected function getFromCacheStore(string $productCode): ?array
-    {
-        return Cache::store($this->cacheStoreName())->get($this->cacheKey($productCode));
-    }
-
-    protected function putInCacheStore(string $productCode, array $attributes): void
+    protected function putInCacheStore(?string $store, string $productCode, array $attributes): void
     {
         // No natural TTL here — the license lifecycle (grace period, expiry)
         // governs validity, not the cache store's own expiration.
-        $store = Cache::store($this->cacheStoreName());
-        $existing = $store->get($this->cacheKey($productCode), []);
-        $store->forever($this->cacheKey($productCode), array_merge(is_array($existing) ? $existing : [], $attributes));
+        $repository = Cache::store($store);
+        $existing = $repository->get($this->cacheKey($productCode), []);
+        $repository->forever(
+            $this->cacheKey($productCode),
+            array_merge(is_array($existing) ? $existing : [], $attributes)
+        );
+    }
+
+    /**
+     * Log a storage failure as class name + code ONLY. The exception message
+     * is deliberately never logged: QueryException messages contain SQL and
+     * bound values, and the bound values can include the license key.
+     */
+    protected function logStoreFailure(string $operation, \Throwable $e): void
+    {
+        $this->logWarning('CoreVisys license: license store operation failed.', [
+            'operation' => $operation,
+            'exception' => get_class($e),
+            'code' => $e->getCode(),
+        ]);
+    }
+
+    protected function logFallbackUsed(string $operation): void
+    {
+        $this->logWarning('CoreVisys license: primary store unavailable; using fallback store.', [
+            'operation' => $operation,
+        ]);
+    }
+
+    protected function logWarning(string $message, array $context = []): void
+    {
+        if (! ($this->config['logging']['enabled'] ?? true)) {
+            return;
+        }
+
+        try {
+            // Defense in depth: even though callers pass only non-secret
+            // context (exception class/code, operation name), scrub anyway so
+            // a future caller cannot leak a key through this path.
+            Log::channel($this->config['logging']['channel'] ?? 'stack')->warning(
+                LogSanitizer::scrubMessage($message),
+                LogSanitizer::scrubContext($context)
+            );
+        } catch (\Throwable) {
+            // Logging must never break the license flow.
+        }
     }
 }

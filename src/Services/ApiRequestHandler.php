@@ -6,6 +6,7 @@ use CoreVisys\License\DTOs\LicenseResponse;
 use CoreVisys\License\Exceptions\ActivationLimitExceededException;
 use CoreVisys\License\Exceptions\LicenseClientException;
 use CoreVisys\License\Exceptions\LicenseServerUnavailableException;
+use CoreVisys\License\Support\LogSanitizer;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -50,7 +51,7 @@ class ApiRequestHandler
 
                 $this->assertResponseSize($response->body());
 
-                return $this->handleStatus($response, $endpoint);
+                return $this->handleStatus($response, $endpoint, $body);
             } catch (ConnectionException|LicenseServerUnavailableException $e) {
                 $lastException = $e;
 
@@ -70,9 +71,15 @@ class ApiRequestHandler
         );
     }
 
-    protected function handleStatus(\Illuminate\Http\Client\Response $response, string $endpoint): LicenseResponse
+    /**
+     * @param  array<string, mixed>  $requestBody  Used only to strip the license
+     *                                             key out of any server message
+     *                                             before it is surfaced or logged.
+     */
+    protected function handleStatus(\Illuminate\Http\Client\Response $response, string $endpoint, array $requestBody = []): LicenseResponse
     {
         $status = $response->status();
+        $secrets = [is_string($requestBody['license_key'] ?? null) ? $requestBody['license_key'] : null];
 
         if (in_array($status, [500, 502, 503, 504], true)) {
             throw new LicenseServerUnavailableException("The license server returned a {$status} error.");
@@ -87,7 +94,13 @@ class ApiRequestHandler
         }
 
         if (in_array($status, [401, 403, 404, 422], true) && ! $response->successful()) {
-            $message = $response->json('message') ?? 'The license request was rejected by the server.';
+            // Server-provided messages are echoed to callers (and possibly to
+            // browsers). Scrub anything key-shaped first, so a validation body
+            // that echoes the submitted key cannot leak it.
+            $message = LogSanitizer::scrubMessage(
+                $response->json('message') ?? 'The license request was rejected by the server.',
+                $secrets
+            );
 
             throw new LicenseClientException($message, 'request_rejected', $status, false);
         }
@@ -142,8 +155,9 @@ class ApiRequestHandler
             return;
         }
 
-        Log::channel(config('corevisys-license.logging.channel', 'stack'))->{$level}($message, [
-            'error' => $e?->getMessage(),
-        ]);
+        Log::channel(config('corevisys-license.logging.channel', 'stack'))->{$level}(
+            LogSanitizer::scrubMessage($message),
+            LogSanitizer::scrubContext(['error' => $e?->getMessage()])
+        );
     }
 }

@@ -138,14 +138,15 @@
             <div class="cv-field">
                 <label class="cv-label" for="license_key">License Key</label>
                 <input
-                    type="text"
+                    type="password"
                     id="license_key"
                     name="license_key"
                     class="cv-input"
                     placeholder="XXXX-XXXX-XXXX-XXXX"
-                    autocomplete="off"
+                    autocomplete="new-password"
+                    spellcheck="false"
+                    autocapitalize="off"
                     autofocus
-                    value="{{ old('license_key') }}"
                 >
                 @error('license_key')
                     <div class="cv-error">{{ $message }}</div>

@@ -3,6 +3,144 @@
 All notable changes to `corevisys/laravel-license-client` are documented
 here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `config_version` config key (integer, default `1`) and an expected-version
+  constant (`CompatibilityChecker::EXPECTED_CONFIG_VERSION`). On boot, a
+  published config whose `config_version` is missing or differs from the
+  expected value logs a warning naming both values, then continues. It never
+  throws, and apps that never published the config are not warned.
+- `required_env_keys` config map: the env variable names the package needs,
+  each mapped to the config key that proves it is present. Reported by name
+  and presence only — never values.
+- `CoreVisys\License\Support\CompatibilityChecker`: a pure, side-effect-free
+  checker returning `[name, status (pass|warn|fail), message]` rows for the
+  PHP version, the Laravel major version, `config_version`, and required env
+  keys. Version inputs are injectable so tests can simulate mismatches.
+- `docs/UPGRADING.md`: upgrade policy, mandatory release-notes review, and a
+  pre-upgrade checklist.
+- `.env.example`: every license environment variable, grouped (connection,
+  credentials, HTTP client, activation/check, cache, grace, fingerprint,
+  signature, monitoring, routes/UI) and commented with placeholders only. A
+  test fails if any `env()` in the config is missing from it.
+- `CoreVisys\License\Support\ConfigValidator`: boot-time validation of the
+  resolved config (server URL, grace period, cache driver, signature
+  algorithm). Failure messages describe the problem and never include a
+  secret value.
+- `CoreVisys\License\Support\ConfigValue`: reusable deprecated-name fallback
+  reader. Reads the new key, falls back to an old key when only the old one is
+  set, and logs a deprecation warning naming the old and new variables (names
+  only, never values). No real key is renamed in this release.
+- `docs/CONFIGURATION.md`: a table of every config key with env var, default,
+  purpose, and production guidance.
+- `cache_fallback_store` config key (env `COREVISYS_LICENSE_CACHE_FALLBACK_STORE`,
+  default `file`): a secondary cache store used as a resilient storage location
+  when the primary store fails. See the Changed/Fixed notes below and
+  `docs/CONFIGURATION.md`.
+- `CoreVisys\License\Support\ConfigDefaults`: empty-string env values normalize
+  to the documented default, so a blank value never overrides a default.
+- `php artisan corevisys:license:doctor`: read-only compatibility, config, and
+  cache-schema diagnostics. Exits non-zero on any failed check.
+- `.gitignore`: now ignores `.env`, `.env.*` (except `.env.example`), `*.pem`,
+  `*.key`, and local license file/cache storage paths.
+- `CoreVisys\License\Support\LicenseKeyRedactor`: one choke point for every
+  human-facing representation of a key. `mask()` returns a short prefix/suffix
+  form (or `[redacted]` for short/empty/null keys); `fingerprint()` returns a
+  deterministic, key-free HMAC used for correlation. Unit-tested for short,
+  empty, null, and minimum-length keys.
+- `CoreVisys\License\Support\LogSanitizer`: scrubs known secrets, email
+  addresses, and long opaque tokens from free-form diagnostic text and (deeply)
+  from log context arrays before anything is stored or logged.
+
+### Changed
+
+- Every key in `config/corevisys-license.php` is now documented in place with
+  its purpose, default, env var name, and production guidance. No default or
+  behavior changed.
+- Documentation: the client baseline is recorded as 139 tests / 318 assertions
+  (previously 46/81 after Phase 2, and 45/77 originally).
+- `LicenseVerifier` offline-grace log calls now pass a real context array (the
+  `log()` helper signature is `(level, message, ?Throwable, array)`); the two
+  offline-grace warnings previously passed the context in the exception slot
+  and would have raised a `TypeError`. No verification logic changed.
+
+### Fixed
+
+- Storage resilience: when the primary store (database table, or cache store in
+  `cache` mode) throws a connection/query error, `LicenseStorage` now falls back
+  to `cache_fallback_store` for reads and mirrors writes to it. A primary that
+  answers — even with "not found" — is authoritative and never falls back.
+  Records read from the fallback are forced through the full frozen offline rule
+  (A6); a failing store never throws out of the public API. Failures are logged
+  as the exception class name and code only (never the message, which can
+  contain SQL and bound values).
+- Both cache migrations are now idempotent (`Schema::hasTable` /
+  `Schema::hasColumn` guards) and safe against partial states; destructive
+  `down()` methods are guarded and documented.
+- `corevisys-license-migrations` now publishes both real migration files. The
+  tag previously referenced a non-existent `create_corevisys_license_cache_table.php`
+  path (missing the `2026_01_01_000000_` timestamp prefix) and did not publish
+  the `add_offline_contract_fields` migration at all, so `vendor:publish` and
+  `corevisys:license:install` silently produced no migration files.
+
+### Deprecated
+
+- None. (The deprecated-config fallback mechanism is available but no key is
+  renamed in this release.)
+
+### Removed
+
+- None.
+
+### Security
+
+- The raw license key can no longer reach any operator- or browser-facing
+  surface. Concretely:
+  - The activation screen's key input is `type="password"` with
+    `autocomplete="new-password"`, and the submitted key is excluded from old
+    input / flashed session data (`LicenseActivationController` now keeps only
+    the CSRF token as safe input). A failed submit is re-rendered with a generic
+    message and never echoes the key.
+  - `corevisys:license:activate` prompts for the key with a hidden `secret()`
+    question when no `key` argument is given, and prints only the redacted mask
+    (never the raw key) in its result table.
+  - Activation failures surfaced to users are generic
+    ("Activation failed. Please check the key and try again."); the server's
+    key-bearing validation text is never shown and never logged unredacted.
+  - Server/browser responses, Blade views, and inline JS contain no key or
+    signature internals; the package ships only a public key (the fixture's
+    test private key lives under `tests/`).
+  - A dedicated non-disclosure suite drives a distinctive sentinel key through
+    the success, failure, and exception paths and asserts it is absent from
+    logs, the rendered page, and the session.
+
+### Upgrade notes
+
+- Security behavior changes: the activation form no longer repopulates the key
+  field after a failed submit (it never did carry the value forward by design,
+  but the input is now explicitly excluded), and activation failures show a
+  generic message instead of the server's text. If you overrode the activation
+  view or controller, port the `type="password"` / `autocomplete="new-password"`
+  input and the `only(['_token'])` safe-input exclusion.
+- Config changes: a new `config_version` key, a `required_env_keys` map, and a
+  `cache_fallback_store` key are added with safe defaults. Republish the config
+  (or add the keys to an existing published copy) to pick them up. Existing
+  defaults are unchanged. Empty-string env values now fall back to the
+  documented default instead of overriding it. Boot now validates `server_url`,
+  `grace_period`, `cache_driver`, `signature.algorithm`, and
+  `cache_fallback_store`; an invalid value fails fast with a message that
+  contains no secrets. A copy of the new `.env.example` is available.
+- Env changes: none (no variable renamed). New `.env.example` documents the
+  existing variables.
+- Middleware changes: none.
+- Migration changes: none. However, the `corevisys-license-migrations` publish
+  tag is fixed; sites that previously ran `corevisys:license:install` and saw
+  no migration published should re-run it (the package ships the migrations via
+  `loadMigrationsFrom`, so existing installs already migrated normally).
+- Route behavior changes: none.
+
 ## [1.0.1] - 2026-09-29
 
 ### Changed
@@ -17,6 +155,14 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Test asserting the reported `package_version` matches `^\d+\.\d+\.\d+$`.
+
+### Upgrade notes
+
+- Config changes: none.
+- Env changes: none.
+- Middleware changes: none.
+- Migration changes: none.
+- Route behavior changes: none.
 
 ## [1.0.0] - 2026-09-29
 
@@ -53,3 +199,11 @@ First stable release. Packagist-ready.
 
 - Supports PHP 8.2+, Laravel 10.x / 11.x / 12.x.
 - Only RSA-SHA256 response signing is supported.
+
+### Upgrade notes
+
+- Config changes: none (first release).
+- Env changes: none (first release).
+- Middleware changes: none (first release).
+- Migration changes: none (first release).
+- Route behavior changes: none (first release).

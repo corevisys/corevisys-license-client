@@ -16,6 +16,7 @@ use CoreVisys\License\Events\LicenseServerUnavailable as LicenseServerUnavailabl
 use CoreVisys\License\Events\LicenseSuspended as LicenseSuspendedEvent;
 use CoreVisys\License\Exceptions\LicenseServerUnavailableException;
 use CoreVisys\License\Exceptions\SignatureVerificationException;
+use CoreVisys\License\Support\LogSanitizer;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -56,8 +57,24 @@ class LicenseVerifier
     {
         $cached = $this->storage->get($this->productCode);
 
-        if (! $force && $cached && ! $this->isDue($cached)) {
-            return $this->statusFromCacheRecord($cached, offline: false, alreadyValidated: true);
+        // A record served from the *fallback* store is a storage location, not
+        // a trust shortcut. It must pass the full frozen offline rule (A6) via
+        // the offline path, never the "fast path" below — which trusts a record
+        // only because its signature verifies against locally cached key
+        // material.
+        $fromFallback = is_array($cached) && ! empty($cached[LicenseStorage::ORIGIN_MARKER]);
+
+        if (! $force && $cached && ! $fromFallback && ! $this->isDue($cached)) {
+            $fastPath = $this->fastPathStatus($cached);
+
+            if ($fastPath !== null) {
+                return $fastPath;
+            }
+
+            // Otherwise the cached record could not be trusted from local
+            // material alone (cold key cache, missing/tampered payload, or the
+            // signed offline_valid_until has passed): fall through and take the
+            // normal path, exactly as if the record were due.
         }
 
         if (! $licenseKey) {
@@ -85,11 +102,16 @@ class LicenseVerifier
         } catch (LicenseServerUnavailableException $e) {
             // Connectivity/rate-limit/5xx failures are transient — these are
             // the only cases allowed to fall back to a still-valid cache.
-            Event::dispatch(new LicenseServerUnavailableEvent(null, ['message' => $e->getMessage()]));
+            Event::dispatch(new LicenseServerUnavailableEvent(null, [
+                'reason_code' => 'license_server_unavailable',
+                'message' => LogSanitizer::scrubMessage($e->getMessage()),
+            ]));
 
             return $this->fallbackToCache($cached, $e->getMessage());
         } catch (SignatureVerificationException $e) {
-            $this->log('warning', 'CoreVisys license: signature verification failed.', $e);
+            $this->log('warning', 'CoreVisys license: signature verification failed.', $e, [
+                'reason_code' => 'signature_verification_failed',
+            ]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => 'signature_verification_failed']));
 
             // A response we cannot trust is treated as no response at all —
@@ -101,14 +123,153 @@ class LicenseVerifier
             // authoritative "no" — it must never be masked by falling back
             // to a previously cached "yes". check() never throws outward;
             // callers always get a LicenseStatus and can inspect ->status.
-            $this->log('warning', 'CoreVisys license: check request rejected.', $e);
+            $this->log('warning', 'CoreVisys license: check request rejected.', $e, [
+                'reason_code' => $e->errorCode(),
+            ]);
             $this->storage->put($this->productCode, [
                 'last_error_at' => now(),
-                'last_error_message' => $e->getMessage(),
+                'last_error_message' => LogSanitizer::scrubMessage($e->getMessage()),
             ]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => $e->errorCode()]));
 
             return LicenseStatus::invalid($e->errorCode());
+        }
+    }
+
+    /**
+     * The fast path: a cached record whose next_check_at is still in the future
+     * may be trusted WITHOUT a server round trip — but only when all of the
+     * following hold, otherwise the caller treats the record as due:
+     *
+     *  1. The cached signed response still verifies against LOCAL key material
+     *     (never a network refresh). A cold key cache, an unknown/revoked
+     *     key_id, or a tampered payload therefore forces the normal path.
+     *  2. Status and expires_at come from the *verified* signed payload, not
+     *     the unsigned database columns (a hand-edited column cannot extend
+     *     trust).
+     *  3. When the signed payload carries offline_valid_until and it is in the
+     *     past, the record is due regardless of next_check_at — an edited
+     *     next_check_at can never extend trust beyond the signed boundary.
+     *
+     * Returns null to mean "treat as due / take the normal path".
+     *
+     * @param  array<string, mixed>  $cached
+     */
+    protected function fastPathStatus(array $cached): ?LicenseStatus
+    {
+        $data = $this->verifiedSignedPayload($cached);
+
+        if ($data === null) {
+            return null;
+        }
+
+        // (3) The signed offline boundary (when present) caps the fast path:
+        // once it has passed the record must be re-checked online, even if the
+        // unsigned next_check_at still claims it is not due. When the field is
+        // absent (legacy rows) the previous behaviour is preserved.
+        $signedOfflineUntil = $this->parseDate($data['offline_valid_until'] ?? null);
+
+        if ($signedOfflineUntil !== null && $signedOfflineUntil->isPast()) {
+            return null;
+        }
+
+        // (2) Status, expiry and the reported boundary come from the *verified*
+        // payload, never the unsigned columns — the signed payload wins.
+        $record = $cached;
+        $record['status'] = (string) ($data['status'] ?? 'unknown');
+        $record['expires_at'] = $this->parseDate($data['expires_at'] ?? null);
+
+        if (array_key_exists('offline_valid_until', $data)) {
+            $record['offline_valid_until'] = $signedOfflineUntil;
+        }
+
+        $resolved = $this->statusFromCacheRecord($record, offline: false, alreadyValidated: false);
+
+        $this->dispatchLifecycleEvents($resolved);
+
+        // A license the signed payload reports as still active is a cached,
+        // self-validating fact and needs no server round trip; anything else
+        // is returned as-is (invalid) rather than being masked as valid.
+        if ($resolved->valid) {
+            Event::dispatch(new LicenseChecked($resolved));
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * Decode and verify the cached signed response using LOCAL key material
+     * only (no network call). Returns the verified data array, or null when the
+     * record lacks the needed material or cannot be verified locally.
+     *
+     * @param  array<string, mixed>  $cached
+     * @return array<string, mixed>|null
+     */
+    protected function verifiedSignedPayload(array $cached): ?array
+    {
+        $reconstructed = $this->reconstructSignedResponse($cached);
+
+        if ($reconstructed === null) {
+            return null;
+        }
+
+        try {
+            if (! $this->signatureVerifier->verifyLocally($reconstructed)) {
+                return null;
+            }
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $reconstructed->data;
+    }
+
+    /**
+     * Rebuild the LicenseResponse envelope from a cached record's stored signed
+     * payload, signature and key_id. Returns null when any is missing or the
+     * payload cannot be decoded into a valid envelope.
+     *
+     * @param  array<string, mixed>  $cached
+     */
+    protected function reconstructSignedResponse(array $cached): ?LicenseResponse
+    {
+        if (empty($cached['signed_payload']) || empty($cached['signature']) || empty($cached['key_id'])) {
+            return null;
+        }
+
+        $data = json_decode($cached['signed_payload'], true);
+
+        if (! is_array($data)) {
+            return null;
+        }
+
+        try {
+            return LicenseResponse::fromArray([
+                'success' => true,
+                'status' => 'success',
+                'data' => $data,
+                'signature' => $cached['signature'],
+                'key_id' => $cached['key_id'],
+            ]);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Parse a date-like value (string or Carbon) into a Carbon instance, or
+     * null when absent/unparseable. Never throws.
+     */
+    protected function parseDate(mixed $value): ?Carbon
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
         }
     }
 
@@ -151,7 +312,7 @@ class LicenseVerifier
     {
         $this->storage->put($this->productCode, [
             'last_error_at' => now(),
-            'last_error_message' => $errorMessage,
+            'last_error_message' => LogSanitizer::scrubMessage($errorMessage),
         ]);
 
         if (! $cached || ! ($this->config['allow_offline_verification'] ?? true)) {
@@ -159,6 +320,8 @@ class LicenseVerifier
         }
 
         if (! $this->withinGracePeriod($cached)) {
+            $this->log('warning', 'CoreVisys license: offline grace window has expired.', null, $this->recordContext($cached, 'grace_period_expired'));
+
             return LicenseStatus::invalid('grace_period_expired');
         }
 
@@ -168,7 +331,25 @@ class LicenseVerifier
             return LicenseStatus::invalid('tampered_cache');
         }
 
+        $this->log('warning', 'CoreVisys license: serving a cached license within the offline grace window.', null, $this->recordContext($cached, 'grace_period_active'));
+
         return $this->statusFromCacheRecord($cached, offline: true, alreadyValidated: true);
+    }
+
+    /**
+     * Safe, redacted identifiers for a cached record — never the raw key.
+     *
+     * @param  array<string, mixed>  $cached
+     * @return array<string, mixed>
+     */
+    protected function recordContext(array $cached, string $reasonCode): array
+    {
+        return [
+            'reason_code' => $reasonCode,
+            'license_id' => $cached['license_id'] ?? null,
+            'product_code' => $cached['product_code'] ?? $this->productCode,
+            'key_id' => $cached['key_id'] ?? null,
+        ];
     }
 
     protected function cachedSignatureStillValid(array $cached): bool
@@ -267,6 +448,18 @@ class LicenseVerifier
             $status->isSuspended() => Event::dispatch(new LicenseSuspendedEvent($status)),
             default => null,
         };
+
+        $context = [
+            'license_id' => $status->licenseId,
+            'product_code' => $status->productCode,
+            'key_id' => $status->keyId,
+        ];
+
+        if ($status->isExpired()) {
+            $this->log('warning', 'CoreVisys license: the license has expired.', null, $context + ['reason_code' => 'license_expired']);
+        } elseif ($status->isGracePeriod) {
+            $this->log('warning', 'CoreVisys license: the license is in its grace period.', null, $context + ['reason_code' => 'grace_period_active']);
+        }
     }
 
     /**
@@ -299,14 +492,22 @@ class LicenseVerifier
         return $this->resolvedPackageVersion = ($normalized === '' ? self::FALLBACK_VERSION : $normalized);
     }
 
-    protected function log(string $level, string $message, ?\Throwable $e = null): void
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    protected function log(string $level, string $message, ?\Throwable $e = null, array $context = []): void
     {
         if (! ($this->config['logging']['enabled'] ?? true)) {
             return;
         }
 
-        Log::channel($this->config['logging']['channel'] ?? 'stack')->{$level}($message, [
-            'error' => $e?->getMessage(),
-        ]);
+        if ($e !== null) {
+            $context['error'] = $e->getMessage();
+        }
+
+        Log::channel($this->config['logging']['channel'] ?? 'stack')->{$level}(
+            LogSanitizer::scrubMessage($message),
+            LogSanitizer::scrubContext($context)
+        );
     }
 }

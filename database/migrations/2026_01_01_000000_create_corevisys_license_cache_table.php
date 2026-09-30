@@ -8,6 +8,12 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // Idempotent: safe to re-run and safe against partial states. If the
+        // table already exists (re-run, or a partially-applied deploy), skip.
+        if (Schema::hasTable('corevisys_license_cache')) {
+            return;
+        }
+
         Schema::create('corevisys_license_cache', function (Blueprint $table) {
             $table->id();
             $table->string('license_id')->nullable()->index();
@@ -41,6 +47,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        // DESTRUCTIVE: dropping the table permanently deletes ALL cached
+        // license state. This is recoverable only by re-activating or
+        // re-checking against the license server. Never run this on a live
+        // database without a backup.
         Schema::dropIfExists('corevisys_license_cache');
     }
 };

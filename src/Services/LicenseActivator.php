@@ -6,7 +6,9 @@ use CoreVisys\License\Contracts\LicenseStorageInterface;
 use CoreVisys\License\DTOs\ActivationResult;
 use CoreVisys\License\Events\LicenseActivated;
 use CoreVisys\License\Exceptions\LicenseClientException;
+use CoreVisys\License\Support\LogSanitizer;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Handles the one-time (or re-)activation handshake against
@@ -77,13 +79,41 @@ class LicenseActivator
 
             return ActivationResult::success($response->message ?? 'License activated successfully.', $status);
         } catch (LicenseClientException $e) {
+            // Diagnostic detail is logged (redacted) but the value returned to
+            // callers is a generic, key-free message.
+            $safeMessage = LogSanitizer::scrubMessage($e->getMessage());
+
             $this->storage->put($this->productCode, [
                 'last_error_at' => now(),
-                'last_error_message' => $e->getMessage(),
+                'last_error_message' => $safeMessage,
             ]);
 
-            return ActivationResult::failure($e->getMessage(), $e->errorCode());
+            $this->log('warning', 'CoreVisys license: activation failed.', [
+                'reason_code' => $e->errorCode(),
+                'product_code' => $this->productCode,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ActivationResult::failure(
+                'Activation failed. Please check the key and try again.',
+                $e->errorCode()
+            );
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    protected function log(string $level, string $message, array $context = []): void
+    {
+        if (! config('corevisys-license.logging.enabled', true)) {
+            return;
+        }
+
+        Log::channel(config('corevisys-license.logging.channel', 'stack'))->{$level}(
+            LogSanitizer::scrubMessage($message),
+            LogSanitizer::scrubContext($context)
+        );
     }
 
     protected function packageVersion(): string
