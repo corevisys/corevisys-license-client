@@ -94,6 +94,31 @@ class ConfigValidatorFallbackTest extends TestCase
         ));
     }
 
+    public function test_explicit_fallback_equal_to_primary_store_fails_without_any_env_var(): void
+    {
+        // Config-only proof: no environment variable is set, so the presence
+        // signal must come from the derived config flag, not an env() lookup.
+        $this->assertFalse(
+            getenv('COREVISYS_LICENSE_CACHE_FALLBACK_STORE'),
+            'This test must run without the env var set.'
+        );
+
+        config()->set('cache.default', 'file');
+
+        $errors = ConfigValidator::validateDetailed(
+            $this->baseConfig([
+                'cache_driver' => 'cache',
+                'cache_store' => null,
+                'cache_fallback_store' => 'file',
+                'cache_fallback_store_explicit' => true, // explicitly configured
+            ]),
+            ['array', 'file', 'redis'],
+        );
+
+        $this->assertNotEmpty($errors);
+        $this->assertStringContainsString('differ', strtolower(implode(' ', $errors)));
+    }
+
     public function test_packaged_default_fallback_matching_the_default_store_is_tolerated(): void
     {
         // Out-of-the-box state: cache mode, no explicit cache_store, and the
