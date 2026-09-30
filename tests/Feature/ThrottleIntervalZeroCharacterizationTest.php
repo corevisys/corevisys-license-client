@@ -7,16 +7,15 @@ use CoreVisys\License\Tests\TestCase;
 use Illuminate\Support\Facades\Http;
 
 /**
- * CHARACTERIZATION — `notifications.throttle_interval = 0`, CURRENT behaviour.
+ * `notifications.throttle_interval = 0` means "throttle disabled".
  *
- * The names state the observed behaviour explicitly. `claimThrottleSlot()` does
- * `Cache::add($key, $ts, 0)`; on Laravel's array (and database) store a zero TTL
- * writes the entry as already-expiring, so `add` returns false in the same
- * second and `notifyFailure()` returns before delivering. The interval is
- * therefore not "no throttle" — it suppresses notification entirely.
+ * An interval of 0 must be treated as NO throttle: every failing health check
+ * delivers a notification, including two failures with the same reason in the
+ * same instant. (Before the fix, `claimThrottleSlot()` passed a 0 TTL to
+ * `Cache::add()`, which the base cache Repository rejects with `false` for any
+ * TTL <= 0, so the throttle slot was never claimed and NOTHING was delivered.)
  *
- * These tests pin the current behaviour so any change of intent (reject 0, or
- * treat 0 as "notify every time") is forced to update them.
+ * Positive intervals are unchanged and are covered by LicenseNotificationTest.
  */
 class ThrottleIntervalZeroCharacterizationTest extends TestCase
 {
@@ -40,22 +39,22 @@ class ThrottleIntervalZeroCharacterizationTest extends TestCase
         $this->artisan('corevisys:license:check', ['--force' => true])->assertExitCode(1);
     }
 
-    public function test_interval_zero_first_failure_is_not_notified(): void
+    public function test_interval_zero_first_failure_is_notified(): void
     {
         $this->runFailingCheck();
 
-        // CHARACTERIZED CURRENT BEHAVIOUR: the FIRST failing health check with
-        // interval 0 emits NO 'health check failed' notification.
-        $this->assertSame(0, $this->countLogs('health check failed'));
+        // INVERSE OF THE OLD CHARACTERIZATION: interval 0 disables throttling,
+        // so the first failing check IS delivered.
+        $this->assertSame(1, $this->countLogs('health check failed'));
     }
 
-    public function test_interval_zero_second_failure_is_not_notified(): void
+    public function test_interval_zero_second_failure_is_also_notified(): void
     {
         $this->runFailingCheck();
         $this->runFailingCheck();
 
-        // CHARACTERIZED CURRENT BEHAVIOUR: the second failure is also NOT
-        // notified — a zero interval suppresses, it does not disable throttling.
-        $this->assertSame(0, $this->countLogs('health check failed'));
+        // INVERSE OF THE OLD CHARACTERIZATION: with no throttle both failures
+        // are delivered, so a zero interval does not suppress notification.
+        $this->assertSame(2, $this->countLogs('health check failed'));
     }
 }

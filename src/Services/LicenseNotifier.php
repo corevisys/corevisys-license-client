@@ -116,6 +116,20 @@ class LicenseNotifier
         $interval = (int) ($settings['throttle_interval'] ?? 3600);
         $interval = max(0, $interval);
 
+        // An interval of 0 means "throttle disabled": always deliver. A 0 TTL
+        // would be rejected by Cache::add() before it touches the store
+        // (Illuminate\Cache\Repository::add() returns false for any TTL <= 0),
+        // which would SUPPRESS every alert instead of disabling the throttle.
+        if ($interval === 0) {
+            try {
+                Cache::forever($this->reasonKey(), $reasonCode);
+            } catch (\Throwable $e) {
+                $this->logFailure('throttle check failed', $e);
+            }
+
+            return true;
+        }
+
         try {
             $claimed = Cache::add($this->throttleKey($reasonCode), now()->timestamp, $interval);
 

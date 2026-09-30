@@ -110,7 +110,7 @@ treats it as a secret everywhere it touches:
 | `notifications.enabled` | `COREVISYS_LICENSE_NOTIFICATIONS` | `false` | Send failure notifications from the scheduled health check | Opt in explicitly; log-only until then. |
 | `notifications.channels` | `COREVISYS_LICENSE_NOTIFICATION_CHANNELS` | `['log']` | Delivery channels (allowed: `log`, `mail`) | Add `mail` only once recipients are set. |
 | `notifications.mail_recipients` | `COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS` | `[]` | Mail recipients for the `mail` channel | Use a monitored ops mailbox. |
-| `notifications.throttle_interval` | `COREVISYS_LICENSE_NOTIFICATION_THROTTLE` | `3600` | Seconds between repeated notifications for the SAME reason | Raise to reduce alert noise. |
+| `notifications.throttle_interval` | `COREVISYS_LICENSE_NOTIFICATION_THROTTLE` | `3600` | Seconds between repeated notifications for the SAME reason. `0` **disables** the throttle (every failure notifies) | Raise to reduce alert noise; use `0` to always alert. |
 
 ## Validation at boot
 
@@ -123,7 +123,7 @@ fast with a clear message that never includes a secret:
 - `signature.algorithm` — must be `rsa`.
 - `notifications.channels` — when set, may only contain `log` and/or `mail`.
 - `notifications.throttle_interval` — when set, must be a non-negative whole
-  number of seconds.
+  number of seconds. `0` is valid and means "throttle disabled", not "suppress".
 - `cache_fallback_store` — when set, must name a configured cache store, and in
   `cache` driver mode must differ from the primary store *after resolution* (an
   explicit `cache_store`, else the application's `cache.default`). The packaged
@@ -165,9 +165,12 @@ Notifications are sent **only** from the scheduled health check
 never trigger an alert. They are **opt-in** (`notifications.enabled` defaults to
 `false`). When enabled, a failure notifies at most once per `reason_code` per
 `notifications.throttle_interval` seconds (an atomic cache lock); a recovery is
-logged once and clears the throttle so the next failure alerts immediately. If
-the cache used for the throttle lock is unavailable, the notifier fails **open**
-(it notifies) so a broken cache never silently suppresses an alert. The
+logged once and clears the throttle so the next failure alerts immediately. A
+`throttle_interval` of `0` **disables** the throttle — every failure notifies,
+including two failures with the same reason in the same instant (proven by
+`ThrottleIntervalZeroCharacterizationTest`). If the cache used for the throttle
+lock is unavailable, the notifier fails **open** (it notifies) so a broken cache
+never silently suppresses an alert. The
 notification payload carries only `reason_code`, `product_code`, `status`, and a
 timestamp — never the license key or signature.
 

@@ -387,7 +387,8 @@ return [
     | notifications.mail_recipients: recipients used when 'mail' is enabled.
     |   Default: [] (none). Env: COREVISYS_LICENSE_NOTIFICATION_RECIPIENTS
     | notifications.throttle_interval: seconds between repeated notifications
-    |   for the SAME failure reason_code. Default: 3600.
+    |   for the SAME failure reason_code. Default: 3600. A value of 0 DISABLES
+    |   the throttle (every failure notifies), it does not suppress alerts.
     |   Env: COREVISYS_LICENSE_NOTIFICATION_THROTTLE
     */
     'notifications' => [

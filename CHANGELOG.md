@@ -55,6 +55,14 @@ approved Phase 1-4 work and the tests that actually prove it.
 
 ### Fixed
 
+- `notifications.throttle_interval = 0` now **disables** the throttle instead of
+  silently suppressing every alert. `LicenseNotifier::claimThrottleSlot()` no
+  longer hands a 0 TTL to `Cache::add()`, which the base cache repository rejects
+  with `false` for any TTL <= 0 (`Illuminate\Cache\Repository::add()` returns
+  before it touches the store), so a zero interval previously meant "never
+  notify". With `0` the notifier delivers every failure and fails open. Proven by
+  `ThrottleIntervalZeroCharacterizationTest` (both the single-failure and the
+  rapid-repeat cases).
 - `env()` removed from `src/`: the `cache_fallback_store` presence signal is
   derived into a boolean config key (`cache_fallback_store_explicit`) at
   config-build time, so nothing under `src/` reads the environment at runtime and
