@@ -143,6 +143,15 @@ approved Phase 1-4 work and the tests that actually prove it.
   edited-`next_check_at`/`status`/`offline_valid_until` cases are covered by
   `tests/Feature/FastPathTrustTest.php`. **Installs upgrading should treat this
   as a security-relevant upgrade.**
+- Fast-path signed-boundary rule (security-relevant). The fast path no longer
+  reads the **unsigned** `offline_valid_until` column, and a verified `active`
+  payload whose **signed** `offline_valid_until` is null or absent is no longer
+  served from cache: it is forced onto the normal online path. (A6: a cached
+  `status: active` is never sufficient on its own.) Non-active statuses keep
+  their previous behaviour. Stated only as far as the tests prove it:
+  `tests/Feature/FastPathSignedBoundaryTest.php` covers the future-signed-boundary
+  control, the active-without-signed-boundary server-down rejection, and the
+  active-without-signed-boundary server-up case following the server's answer.
 - The raw license key can no longer reach any operator- or browser-facing
   surface. Concretely:
   - The activation screen's key input is `type="password"` with
@@ -187,6 +196,12 @@ approved Phase 1-4 work and the tests that actually prove it.
   no migration published should re-run it (the package ships the migrations via
   `loadMigrationsFrom`, so existing installs already migrated normally).
 - Route behavior changes: none.
+- Cache behavior on upgrade: installs whose cached rows were written by a
+  previous version may lack a **signed** `offline_valid_until`. After upgrading,
+  such rows are no longer served from the fast path (see the Security note), so
+  the install performs **one online check** the next time it verifies, then
+  stores the newly signed boundary. This is expected and is proven by
+  `tests/Feature/FastPathSignedBoundaryTest.php`; no manual action is required.
 
 ## [1.0.1] - 2026-09-29
 

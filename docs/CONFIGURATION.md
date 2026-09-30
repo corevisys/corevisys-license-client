@@ -132,6 +132,20 @@ store never throws out of the public API, and failures are logged as the
 exception class name and code only (never the message, which can contain SQL and
 bound values).
 
+## Revocation freshness (cached key set)
+
+A revocation is enforced as soon as the client resolves it, but the client learns
+of a revocation from the cached public-key set, whose lifetime is
+`signature.public_key_cache_ttl` (default `86400` seconds / 24h):
+
+- On the fast path (a not-yet-due record verified locally), a key revoked *after*
+  the key set was last refreshed can still be accepted until the key set is
+  refreshed or the record becomes due and triggers a fresh check.
+- A fresh online check uses the published key set and fails closed for a revoked
+  or unknown `key_id` (A5).
+- Lower `signature.public_key_cache_ttl` to shorten the worst-case window, at the
+  cost of more key-fetch requests.
+
 ## Diagnostics
 
 ```

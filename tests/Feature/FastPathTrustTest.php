@@ -155,20 +155,34 @@ class FastPathTrustTest extends TestCase
         $this->assertSame('grace_period_expired', $status->status);
     }
 
-    public function test_legacy_record_without_offline_boundary_is_unchanged(): void
+    public function test_legacy_record_without_signed_boundary_goes_online(): void
     {
+        // Same fixture as before, but the expected outcome is inverted: a
+        // verified ACTIVE payload with no SIGNED offline_valid_until cannot be
+        // trusted from cache alone (A6). The fast path must decline it and the
+        // record must be re-checked online.
         $this->seedNotDueRecord(['offline_valid_until' => null]);
 
-        Http::fake();
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/check' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_fast',
+                'status' => 'active',
+                'product_code' => self::PRODUCT,
+                'license_type' => 'full',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
 
         $status = $this->client()->check();
 
-        // No signed offline_valid_until -> previous behaviour preserved: the
-        // verified record is trusted on the fast path with no network call.
-        $this->assertTrue($status->valid);
-        $this->assertTrue($status->fromCache);
+        // The online path is taken and the server's authoritative answer is
+        // returned (not the cached record).
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/license/check'));
 
-        Http::assertNothingSent();
+        $this->assertTrue($status->valid);
+        $this->assertFalse($status->fromCache);
     }
 
     public function test_edited_next_check_at_cannot_extend_trust_past_the_signed_boundary(): void

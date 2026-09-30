@@ -150,6 +150,11 @@ class LicenseVerifier
      *  3. When the signed payload carries offline_valid_until and it is in the
      *     past, the record is due regardless of next_check_at — an edited
      *     next_check_at can never extend trust beyond the signed boundary.
+     *  4. A verified ACTIVE payload must carry a signed offline_valid_until that
+     *     is still in the future. The unsigned offline_valid_until column is
+     *     NEVER consulted, and an active payload with a null/absent signed
+     *     boundary is not served from cache (A6) — it takes the normal path.
+     *     Non-active statuses keep their previous behaviour.
      *
      * Returns null to mean "treat as due / take the normal path".
      *
@@ -163,25 +168,38 @@ class LicenseVerifier
             return null;
         }
 
-        // (3) The signed offline boundary (when present) caps the fast path:
-        // once it has passed the record must be re-checked online, even if the
-        // unsigned next_check_at still claims it is not due. When the field is
-        // absent (legacy rows) the previous behaviour is preserved.
+        // The signed payload is the ONLY source of the offline boundary; the
+        // unsigned offline_valid_until column is never consulted here.
         $signedOfflineUntil = $this->parseDate($data['offline_valid_until'] ?? null);
 
+        // (3) A signed boundary that has already passed forces an online
+        // re-check, even when the unsigned next_check_at still claims the
+        // record is not due — an edited next_check_at can never extend trust
+        // beyond the signed boundary.
         if ($signedOfflineUntil !== null && $signedOfflineUntil->isPast()) {
+            return null;
+        }
+
+        $status = (string) ($data['status'] ?? 'unknown');
+
+        // (4) A verified ACTIVE payload with no signed offline boundary cannot
+        // be trusted from cache alone (A6): take the normal online path. A
+        // non-active status (suspended, revoked, expired, ...) keeps its
+        // previous behaviour and is returned as-is (invalid) without a round
+        // trip.
+        if ($signedOfflineUntil === null && $status === 'active') {
             return null;
         }
 
         // (2) Status, expiry and the reported boundary come from the *verified*
         // payload, never the unsigned columns — the signed payload wins.
+        // Assigning the (possibly null) signed boundary unconditionally also
+        // guarantees the unsigned column can never leak into the resolved
+        // status.
         $record = $cached;
-        $record['status'] = (string) ($data['status'] ?? 'unknown');
+        $record['status'] = $status;
         $record['expires_at'] = $this->parseDate($data['expires_at'] ?? null);
-
-        if (array_key_exists('offline_valid_until', $data)) {
-            $record['offline_valid_until'] = $signedOfflineUntil;
-        }
+        $record['offline_valid_until'] = $signedOfflineUntil;
 
         $resolved = $this->statusFromCacheRecord($record, offline: false, alreadyValidated: false);
 
