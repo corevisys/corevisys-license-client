@@ -13,7 +13,9 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
   by the reviewer. The `[Unreleased]` entries describe the implementation; they
   are not a claim of delivery until reviewed.
 - Phase 6 (route-enforcement lockout-safety: excluded routes, redirect-loop
-  guard, offline-under-outage allow): not approved, not complete.
+  guard, offline-under-outage allow): implemented on this branch, NOT yet
+  approved by the reviewer. The `[Unreleased]` entries describe the
+  implementation; they are not a claim of delivery until reviewed.
 - Phase 7 (exhaustive test-gap fill and CI version matrix): not approved, not
   complete.
 - Phase 8 (`corevisys:license:status`/`:check` operational hardening and
@@ -30,6 +32,24 @@ approved Phase 1-4 work and the tests that actually prove it.
 
 ### Changed
 
+- Route enforcement is now lockout-safe. `corevisys.license` lets
+  `middleware.excluded_routes` (route names and/or `Str::is` path patterns)
+  through with **no** license check and **no** server call, so auth/health and
+  the activation screen stay reachable while a license is invalid. The built-in
+  activation route is exempt **unconditionally** (matched by `ui.route_name`,
+  including the `.store` action and name-prefixed variants, and by an
+  `ui.route_prefix`-based path pattern), so a denied web request always has a
+  reachable redirect target and a redirect loop is impossible even when the
+  operator removes the activation route from the list. The middleware remains a
+  named alias only — it is never pushed into the global middleware stack.
+  Proven by `tests/Feature/MiddlewareExcludedRoutesTest.php`. No trust, offline,
+  fast-path or online verification logic changed.
+- `middleware.excluded_routes` defaults are open by design: the packaged list
+  names the activation routes plus the conventional `login`/`logout`/`health`/
+  `up` routes. An absent, `null` or empty value yields these defaults (empty
+  never means "exclude everything"). `ConfigValidator` rejects a non-array value
+  or a non-string/empty entry with a generic message that never prints a route
+  value; absent/null/empty stays valid.
 - `LicenseActivator` returns a generic failure message ("Activation failed.
   Please check the key and try again.") for a `LicenseClientException`, so a
   server body that echoes the submitted key is never surfaced — proven by
@@ -159,6 +179,45 @@ approved Phase 1-4 work and the tests that actually prove it.
   `tests/Feature/LicenseNotificationTest.php`,
   `tests/Unit/NotificationConfigTest.php`, and the
   `tests/Concerns/CapturesLogs.php` helper.
+- `middleware.excluded_routes` config key (route names and/or `Str::is` path
+  patterns; not environment-driven, so `config:cache`-safe) with a packaged
+  default that keeps the activation, auth and health routes open. Validated at
+  boot by `ConfigValidator`.
+- `docs/ROUTES.md`: which routes carry `corevisys.license`, which stay open, how
+  the design prevents deployment/admin lockout, and emergency recovery steps
+  (`corevisys:license:status`, `corevisys:license:check`,
+  `php artisan route:list --path=license`).
+- `tests/Feature/MiddlewareExcludedRoutesTest.php`: proves valid allows a
+  protected route; invalid/expired/suspended deny (web redirect + generic JSON
+  `403` with no key or secret); each default excluded route is reachable while
+  invalid; a custom exclusion by name and by path pattern is honoured; the
+  activation route stays reachable when removed from `excluded_routes`; a
+  denied web request following redirects ends on a 200 activation page (no
+  loop); an offline signed cache allows while the server is down, and a
+  no/tampered cache denies; an excluded route makes no HTTP call; and
+  `corevisys.license` is an alias, not global middleware.
+
+### Upgrade notes — route lockout safety
+
+- **Default open routes.** Upgrading adds `middleware.excluded_routes` with a
+  packaged default that exempts the activation screen and the conventional
+  `login`/`logout`/`health`/`up` routes from `corevisys.license`. If you
+  deliberately relied on the middleware denying any of those routes, remove
+  them from the list (or set an explicit list). The list is read from the
+  resolved config, so after reviewing your published config run
+  `php artisan config:clear` (or re-run `config:cache`).
+- **Hard-coded activation exemption.** The built-in activation route is exempt
+  from the license check **unconditionally**, even when it is not named in
+  `excluded_routes`. This is intentional lockout-safety: a denied web request
+  must always be able to reach a page that renders. Do not place the activation
+  screen behind `corevisys.license` expecting it to be enforced — it is passed
+  through.
+- **No verification behaviour changed.** This release touches only route
+  gating and its validation/docs. The trust, offline, fast-path and online
+  verification logic is unchanged, and `SignedPayloadVerifier.php`,
+  `ApiRequestHandler.php`, `LicenseVerifier.php`, `LicenseActivator.php`,
+  `LicenseStorage.php`, `LicenseNotifier.php`, `LicenseResponse.php` and the
+  contract fixture are untouched by Phase 6.
 
 ### Changed
 

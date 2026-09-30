@@ -101,6 +101,7 @@ treats it as a secret everywhere it touches:
 | `middleware.redirect_route` | — | `null` | Route name for denied web requests | Point at a page NOT behind `corevisys.license`. |
 | `middleware.abort_status` | — | `403` | Status for denied JSON requests | `403` is the safe default. |
 | `middleware.bypass_in_local` | `COREVISYS_LICENSE_BYPASS_LOCAL` | `false` | Skip enforcement when local | MUST remain `false` in production. |
+| `middleware.excluded_routes` | — | packaged defaults (below) | Route names and/or `Str::is` path patterns `corevisys.license` lets through with **no** license check and **no** server call | Keep auth/health/activation listed so a lapsed license can always be repaired. Absent/null/empty means the packaged defaults apply. The activation route is exempt regardless of this list. See `docs/ROUTES.md`. |
 | `ui.enabled` | `COREVISYS_LICENSE_UI_ENABLED` | `true` | Enable the activation screen | Turn off if you build your own UI. |
 | `ui.route_prefix` | `COREVISYS_LICENSE_UI_PREFIX` | `license` | Activation route prefix | Keep the activation route open (never behind `corevisys.license`). |
 | `ui.route_name` | — | `corevisys.license.activate` | Named activation route | The default deny redirect target. |
@@ -130,11 +131,35 @@ fast with a clear message that never includes a secret:
   default (`file`) is tolerated when it only coincides with the framework's own
   default store, because that is the out-of-the-box state, not a configured
   collision; `corevisys:license:doctor` warns in that case. Empty disables it.
+- `middleware.excluded_routes` — when present, must be an array whose every entry
+  is a non-empty string (a route name and/or an `Str::is` path pattern). A
+  non-array value, or an entry that is not a non-empty string, fails clearly;
+  absent, `null` or an empty list is valid and yields the packaged defaults. The
+  failure message describes the shape and never prints a configured route value.
 
 Empty-string environment values are normalized to the documented default (for
 example `COREVISYS_LICENSE_SERVER_URL=` still yields the default URL), so only
 genuinely malformed **non-empty** values fail. Missing optional values (for
 example `license_key`, `cache_store`, `fingerprint.hmac_secret`) are tolerated.
+
+### Default open routes (`middleware.excluded_routes`)
+
+When `middleware.excluded_routes` is absent, `null` or empty, the packaged
+defaults apply — each entry is matched with `Str::is()` against **both** the
+route name and the URL path, so a bare word covers its name and its path:
+
+| Entry | Covers |
+|---|---|
+| `corevisys.license.activate` / `...activate.store` | The built-in activation screen (GET and POST actions) |
+| `license/activate` | The activation path itself |
+| `login`, `logout` | Conventional auth routes (by name and path) |
+| `health`, `up` | Conventional health/liveness probes (by name and path) |
+
+"Empty" therefore means *the documented defaults*, never "exclude everything".
+The built-in activation route is **always** exempt regardless of this list (a
+hard-coded guard keyed on `ui.route_name` / `ui.route_prefix`), so an operator
+who removes it can never create a redirect loop. Full routing detail, the
+lockout-safety rationale, and emergency steps are in `docs/ROUTES.md`.
 
 ## Monitoring and notifications
 
