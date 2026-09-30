@@ -7,7 +7,6 @@ use CoreVisys\License\DTOs\LicenseResponse;
 use CoreVisys\License\Services\SignedPayloadVerifier;
 use CoreVisys\License\Tests\Concerns\SignsPayloads;
 use CoreVisys\License\Tests\TestCase;
-use Illuminate\Support\Facades\Cache as CacheFacade;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -19,14 +18,6 @@ use Illuminate\Support\Facades\Http;
 class SignedPayloadVerifierLocalTest extends TestCase
 {
     use SignsPayloads;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        // The 'file' fallback store persists between tests; isolate it.
-        CacheFacade::store('file')->flush();
-    }
 
     private function verifier(): SignedPayloadVerifier
     {

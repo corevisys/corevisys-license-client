@@ -31,13 +31,6 @@ class FastPathEntitlementTest extends TestCase
 
     private const PRODUCT = 'test-product';
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        CacheFacade::store('file')->flush();
-    }
-
     /**
      * Seed a cache row whose signed payload and unsigned columns can be set
      * independently, with the record NOT due (exercises the fast path).

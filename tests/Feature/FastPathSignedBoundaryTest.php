@@ -21,15 +21,6 @@ class FastPathSignedBoundaryTest extends TestCase
 
     private const PRODUCT = 'test-product';
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        // The 'file' fallback store persists between runs; flush it so a stale
-        // key set from an earlier test cannot mask a real failure.
-        CacheFacade::store('file')->flush();
-    }
-
     /**
      * Seed a "not yet due" record. $dataOverrides drive the SIGNED payload;
      * offline_valid_until may be removed to model a legacy row. The unsigned

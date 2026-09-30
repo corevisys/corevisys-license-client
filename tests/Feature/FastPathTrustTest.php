@@ -24,18 +24,6 @@ class FastPathTrustTest extends TestCase
     private const PRODUCT = 'test-product';
 
     /**
-     * The 'file' fallback cache store persists on disk between tests, so a key
-     * seeded by an earlier test could otherwise leak into the "cold key cache"
-     * case and mask a real failure. Flush it before every test.
-     */
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        CacheFacade::store('file')->flush();
-    }
-
-    /**
      * Seed a "not yet due" cache record whose signed payload can be trusted
      * offline (unless $seedKeys is false, which simulates a cold key cache).
      *

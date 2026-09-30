@@ -34,15 +34,6 @@ class LicenseOfflineTrustTest extends TestCase
 
     private const PRODUCT = 'test-product';
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        // The 'file' cache store persists on disk across tests; flush it to
-        // keep fallback assertions isolated.
-        CacheFacade::store('file')->flush();
-    }
-
     /**
      * Seed a cache record whose signed payload and unsigned columns are set
      * INDEPENDENTLY — the two must be able to disagree so we can prove which

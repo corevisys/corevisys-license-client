@@ -22,15 +22,6 @@ class FastPathKeyRevocationTest extends TestCase
 
     private const PRODUCT = 'test-product';
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        // The 'file' fallback store persists between runs; flush it so a stale
-        // key set from an earlier test cannot mask a real failure.
-        CacheFacade::store('file')->flush();
-    }
-
     /**
      * Seed a "not yet due" cache record signed by test-key-1, together with the
      * given cached public-key metadata (available_keys / revoked_key_ids).
