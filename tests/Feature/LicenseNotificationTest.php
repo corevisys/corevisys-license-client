@@ -177,4 +177,70 @@ class LicenseNotificationTest extends TestCase
         $this->artisan('corevisys:license:check', ['--force' => true])->assertExitCode(1);
         $this->assertSame(2, $this->countLogs('health check failed'));
     }
+
+    /**
+     * The throttle window is driven by the configured throttle_interval, not a
+     * hard-coded value: with a 60s interval a second identical failure ONE
+     * second later is suppressed, but after the window elapses it notifies again.
+     */
+    public function test_throttle_window_is_driven_by_the_configured_interval(): void
+    {
+        config()->set('corevisys-license.notifications.enabled', true);
+        config()->set('corevisys-license.notifications.channels', ['mail']);
+        config()->set('corevisys-license.notifications.mail_recipients', ['ops@example.com']);
+        config()->set('corevisys-license.notifications.throttle_interval', 60);
+
+        $this->seedLapsedSignedCache();
+
+        Notification::fake();
+        Http::fake(['*/api/v1/license/check' => Http::response('', 500)]);
+
+        // 1) First failure arms the 60s window.
+        $this->artisan('corevisys:license:check', ['--force' => true])->assertExitCode(1);
+        Notification::assertSentOnDemandTimes(LicenseFailureNotification::class, 1);
+
+        // 2) One second later — still inside the window — suppressed.
+        $this->travel(1)->seconds();
+        $this->artisan('corevisys:license:check', ['--force' => true])->assertExitCode(1);
+        Notification::assertSentOnDemandTimes(LicenseFailureNotification::class, 1);
+
+        // 3) Window elapsed — notifies again.
+        $this->travel(2)->minutes();
+        $this->artisan('corevisys:license:check', ['--force' => true])->assertExitCode(1);
+        Notification::assertSentOnDemandTimes(LicenseFailureNotification::class, 2);
+    }
+
+    /**
+     * The delivered mail carries only the non-secret context: the stable reason
+     * code is present in the subject, and no cached licence key ever appears in
+     * the message body.
+     */
+    public function test_mail_notification_carries_the_reason_and_no_secret(): void
+    {
+        config()->set('corevisys-license.notifications.enabled', true);
+        config()->set('corevisys-license.notifications.channels', ['mail']);
+        config()->set('corevisys-license.notifications.mail_recipients', ['ops@example.com']);
+
+        $this->seedLapsedSignedCache();
+
+        Notification::fake();
+        Http::fake(['*/api/v1/license/check' => Http::response('', 500)]);
+
+        $this->artisan('corevisys:license:check', ['--force' => true])->assertExitCode(1);
+
+        Notification::assertSentOnDemand(
+            LicenseFailureNotification::class,
+            function ($notification) {
+                $mail = $notification->toMail(new class
+                {
+                });
+
+                $body = implode(' ', $mail->introLines ?? []);
+
+                return str_contains((string) $mail->subject, self::STABLE_REASON)
+                    && ! str_contains($body, 'CACHED-KEY')
+                    && ! array_key_exists('license_key', $notification->context);
+            }
+        );
+    }
 }

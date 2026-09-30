@@ -76,4 +76,17 @@ class NotificationConfigTest extends TestCase
 
         $this->assertSame([], $errors);
     }
+
+    /**
+     * Phase 5 checklist: an EMPTY notifications.channels list is valid — it means
+     * "use the default" (['log']), not a misconfiguration.
+     */
+    public function test_empty_notification_channels_is_valid(): void
+    {
+        $errors = ConfigValidator::validateDetailed($this->baseConfig([
+            'notifications' => ['enabled' => true, 'channels' => []],
+        ]));
+
+        $this->assertSame([], $errors, implode(' ', $errors));
+    }
 }

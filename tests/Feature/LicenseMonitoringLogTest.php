@@ -168,4 +168,81 @@ class LicenseMonitoringLogTest extends TestCase
         $this->assertSame('error', $entry->level);
         $this->assertSame('signature_verification_failed', $entry->context['reason_code'] ?? null);
     }
+
+    /**
+     * Phase 5 checklist: a SUCCESSFUL check must not emit an info-level entry.
+     * There is no "license checked" info line — info is reserved for activation.
+     */
+    public function test_normal_online_check_emits_no_info_level_log(): void
+    {
+        $this->seedTrustedKey();
+
+        Http::fake([
+            '*/api/v1/license/check' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_info',
+                'status' => 'active',
+                'product_code' => 'test-product',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->check(true);
+
+        $this->assertTrue($status->valid);
+        $this->assertSame([], $this->logsAt('info'));
+    }
+
+    /**
+     * Phase 5 checklist: a fast-path hit (cached, not due, locally verifiable)
+     * must also emit no info-level entry.
+     */
+    public function test_fast_path_hit_emits_no_info_level_log(): void
+    {
+        $data = [
+            'license_id' => 'lic_fast',
+            'status' => 'active',
+            'product_code' => 'test-product',
+            'license_type' => 'full',
+            'expires_at' => now()->addYear()->toIso8601String(),
+            'features' => [],
+            'issued_at' => now()->subMinute()->toIso8601String(),
+            'offline_valid_until' => now()->addDays(7)->toIso8601String(),
+            'is_grace_period' => false,
+        ];
+
+        $envelope = $this->signedEnvelope($data, 'test-key-1');
+
+        /** @var LicenseStorageInterface $storage */
+        $storage = $this->app->make(LicenseStorageInterface::class);
+        $storage->putPublicKey('test-key-1', $this->keyPair()['public'], 86400);
+        $storage->putPublicKeyMetadata([
+            'available_keys' => [['key_id' => 'test-key-1', 'public_key' => $this->keyPair()['public']]],
+            'revoked_key_ids' => [],
+        ], 86400);
+
+        $storage->put('test-product', [
+            'license_id' => $data['license_id'],
+            'status' => $data['status'],
+            'signed_payload' => json_encode($data, JSON_UNESCAPED_SLASHES),
+            'signature' => $envelope['signature'],
+            'key_id' => 'test-key-1',
+            'issued_at' => $data['issued_at'],
+            'offline_valid_until' => $data['offline_valid_until'],
+            'is_grace_period' => false,
+            'expires_at' => $data['expires_at'],
+            'last_successful_check_at' => now()->subHour(),
+            'next_check_at' => now()->addDay(), // not due -> fast path
+        ]);
+
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response([], 500),
+            '*/api/v1/license/check' => Http::response([], 500),
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertTrue($status->valid, 'Expected the fast path to serve the record as valid.');
+        $this->assertSame([], $this->logsAt('info'));
+    }
 }
