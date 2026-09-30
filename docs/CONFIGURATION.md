@@ -132,6 +132,35 @@ store never throws out of the public API, and failures are logged as the
 exception class name and code only (never the message, which can contain SQL and
 bound values).
 
+### Offline trust windows — which value wins
+
+When the server cannot be reached, the client trusts a cached license only
+through the **signed** payload the server issued, never through the unsigned
+cache columns. Three windows apply and the client honours the **maximum
+honour window** whose conditions are all satisfied:
+
+| Window | Source | Can it extend trust? |
+|---|---|---|
+| Server offline boundary | signed `offline_valid_until` | Yes — the primary boundary the server issued |
+| Server expiry | signed `expires_at` | No — an expired license is never rescued by the offline window |
+| Local grace | `grace_period` hours from the last successful check | No — it can only shorten the boundary |
+
+Rules, in plain terms:
+
+- `offline_valid_until` must be **signed and in the future**. The unsigned
+  column of the same name is never read, so editing it can neither extend trust
+  nor deny it.
+- Signed `expires_at` must be absent or in the future.
+- The local `grace_period` is anchored to `last_successful_check_at` and can only
+  **shorten** the outward boundary. A recent check never extends a signed
+  boundary that has already passed.
+- The signed `is_grace_period` flag is reported for visibility only; it does not
+  by itself grant trust.
+
+The same signed-only rule is applied to a record read from the
+`cache_fallback_store`: the fallback is a storage location, not a trust
+shortcut. Proven by `tests/Feature/LicenseOfflineTrustTest.php`.
+
 ## Revocation freshness (cached key set)
 
 A revocation is enforced as soon as the client resolves it, but the client learns

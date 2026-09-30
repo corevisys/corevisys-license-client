@@ -337,21 +337,29 @@ class LicenseVerifier
             return LicenseStatus::invalid('license_server_unavailable');
         }
 
-        if (! $this->withinGracePeriod($cached)) {
-            $this->log('warning', 'CoreVisys license: offline grace window has expired.', null, $this->recordContext($cached, 'grace_period_expired'));
+        // The offline rule (A6) is evaluated against the VERIFIED signed
+        // payload ONLY. The unsigned cache columns never carry or extend
+        // trust: a hand-edited status, expires_at or offline_valid_until
+        // cannot widen the offline window or flip an invalid license to valid.
+        $record = $this->trustedOfflineRecord($cached);
 
-            return LicenseStatus::invalid('grace_period_expired');
-        }
+        if ($record === null) {
+            // Distinguish the two operator-visible cases WITHOUT trusting the
+            // unsigned columns: a still-verifiable signed payload whose windows
+            // have closed is a lapsed grace/offline window; anything else is a
+            // tampered or unverifiable cache.
+            if ($this->verifiedSignedPayload($cached) !== null) {
+                $this->log('warning', 'CoreVisys license: offline grace window has expired.', null, $this->recordContext($cached, 'grace_period_expired'));
 
-        // Re-verify the cached signed payload; a manually edited row must
-        // never be trusted even inside the grace window.
-        if (! $this->cachedSignatureStillValid($cached)) {
+                return LicenseStatus::invalid('grace_period_expired');
+            }
+
             return LicenseStatus::invalid('tampered_cache');
         }
 
         $this->log('warning', 'CoreVisys license: serving a cached license within the offline grace window.', null, $this->recordContext($cached, 'grace_period_active'));
 
-        return $this->statusFromCacheRecord($cached, offline: true, alreadyValidated: true);
+        return $this->statusFromCacheRecord($record, offline: true, alreadyValidated: true);
     }
 
     /**
@@ -370,33 +378,66 @@ class LicenseVerifier
         ];
     }
 
-    protected function cachedSignatureStillValid(array $cached): bool
+    /**
+     * Apply the full frozen offline rule (A6) to a cached record and return a
+     * copy whose status, expiry and offline boundary come from the VERIFIED
+     * signed payload — or null when any condition fails.
+     *
+     * Conditions (all required):
+     *  1. The cached signed payload still verifies against LOCAL key material
+     *     (no network refresh) — a cold key cache, an unknown/revoked key_id,
+     *     or a tampered payload fails closed.
+     *  2. The signed payload carries offline_valid_until in the future.
+     *  3. The signed expires_at is absent, or in the future.
+     *  4. The local grace window (grace_period hours from the last successful
+     *     check) has not expired. It can only shorten the boundary, never
+     *     extend it.
+     *
+     * The unsigned cache columns are never read here.
+     *
+     * @param  array<string, mixed>  $cached
+     * @return array<string, mixed>|null
+     */
+    protected function trustedOfflineRecord(array $cached): ?array
     {
-        if (empty($cached['signed_payload']) || empty($cached['signature']) || empty($cached['key_id'])) {
-            return false;
+        $data = $this->verifiedSignedPayload($cached);
+
+        if ($data === null) {
+            return null;
         }
 
-        $data = json_decode($cached['signed_payload'], true);
+        $expiresAt = $this->parseDate($data['expires_at'] ?? null);
+        $offlineUntil = $this->parseDate($data['offline_valid_until'] ?? null);
 
-        if (! is_array($data)) {
-            return false;
+        // (2) A signed boundary in the past — or absent — means no offline
+        // trust; the unsigned offline_valid_until column is never consulted.
+        if ($offlineUntil === null || $offlineUntil->isPast()) {
+            return null;
         }
 
-        $reconstructed = LicenseResponse::fromArray([
-            'success' => true,
-            'status' => 'success',
-            'data' => $data,
-            'signature' => $cached['signature'],
-            'key_id' => $cached['key_id'],
-        ]);
-
-        try {
-            $this->signatureVerifier->verify($reconstructed);
-
-            return true;
-        } catch (SignatureVerificationException) {
-            return false;
+        // (3) A signed expiry in the past is not rescued by the offline window.
+        if ($expiresAt !== null && $expiresAt->isPast()) {
+            return null;
         }
+
+        // (4) The local grace window, anchored to the last successful check,
+        // must still be open. It can only shorten the boundary above.
+        if (empty($cached['last_successful_check_at'])) {
+            return null;
+        }
+
+        $graceHours = (int) ($this->config['grace_period'] ?? 72);
+
+        if (Carbon::parse($cached['last_successful_check_at'])->addHours($graceHours)->isPast()) {
+            return null;
+        }
+
+        $record = $cached;
+        $record['status'] = (string) ($data['status'] ?? 'unknown');
+        $record['expires_at'] = $expiresAt;
+        $record['offline_valid_until'] = $offlineUntil;
+
+        return $record;
     }
 
     protected function isDue(array $cached): bool
@@ -406,25 +447,6 @@ class LicenseVerifier
         }
 
         return Carbon::parse($cached['next_check_at'])->isPast();
-    }
-
-    protected function withinGracePeriod(array $cached): bool
-    {
-        if (empty($cached['offline_valid_until']) || Carbon::parse($cached['offline_valid_until'])->isPast()) {
-            return false;
-        }
-
-        if (! empty($cached['expires_at']) && Carbon::parse($cached['expires_at'])->isPast()) {
-            return false;
-        }
-
-        if (empty($cached['last_successful_check_at'])) {
-            return false;
-        }
-
-        $graceHours = (int) ($this->config['grace_period'] ?? 72);
-
-        return Carbon::parse($cached['last_successful_check_at'])->addHours($graceHours)->isFuture();
     }
 
     protected function statusFromCacheRecord(array $cached, bool $offline, bool $alreadyValidated): LicenseStatus

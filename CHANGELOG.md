@@ -55,7 +55,15 @@ approved Phase 1-4 work and the tests that actually prove it.
   set, and logs a deprecation warning naming the old and new variables (names
   only, never values). No real key is renamed in this release.
 - `docs/CONFIGURATION.md`: a table of every config key with env var, default,
-  purpose, and production guidance.
+  purpose, and production guidance, plus a plain-language description of the
+  offline trust windows (which of the signed boundary, signed expiry, and local
+  grace wins, and the fact that local grace can only shorten the boundary).
+- `tests/Feature/LicenseOfflineTrustTest.php`: acceptance tests proving the
+  offline/grace path trusts the signed payload only — a signed `suspended` is not
+  overridden by an unsigned `active` column; an unsigned boundary/expiry cannot
+  extend (or shorten) signed trust; the local grace window cannot extend a signed
+  boundary; and a fallback record is accepted only when it passes the full A6
+  rule.
 - `cache_fallback_store` config key (env `COREVISYS_LICENSE_CACHE_FALLBACK_STORE`,
   default `file`): a secondary cache store used as a resilient storage location
   when the primary store fails. See the Changed/Fixed notes below and
@@ -117,6 +125,19 @@ approved Phase 1-4 work and the tests that actually prove it.
   path (missing the `2026_01_01_000000_` timestamp prefix) and did not publish
   the `add_offline_contract_fields` migration at all, so `vendor:publish` and
   `corevisys:license:install` silently produced no migration files.
+- Offline/grace trust now derives entirely from the **signed** payload. The
+  offline path (`LicenseVerifier::fallbackToCache`) previously read the
+  **unsigned** cache columns — `status`, `expires_at`, and `offline_valid_until`
+  — so a hand-edited row could be served as `active`, could extend the offline
+  boundary, or (via the unsigned expiry) could shorten trust. It now overlays
+  `status`, `expires_at`, and `offline_valid_until` from the verified signed
+  payload and evaluates every A6 condition (signed `offline_valid_until` in the
+  future; signed `expires_at` absent or in the future; local `grace_period`
+  window, anchored to `last_successful_check_at`, not expired) against that
+  payload alone. The local grace window can only shorten the outward boundary.
+  The shared `withinGracePeriod()` helper and the redundant
+  `cachedSignatureStillValid()` were replaced by a single
+  `trustedOfflineRecord()` that fails closed. No public signature changed.
 
 ### Deprecated
 
@@ -171,6 +192,15 @@ approved Phase 1-4 work and the tests that actually prove it.
   - A dedicated non-disclosure suite drives a distinctive sentinel key through
     the success, failure, and exception paths and asserts it is absent from
     logs, the rendered page, and the session.
+- Offline trust boundary (security-relevant). The cached offline path now trusts
+ the **signed** payload only (A6). Previously the unsigned columns decided
+ validity: a `status` column edited to `active` was served as a valid license,
+ an unsigned `offline_valid_until`/`expires_at` could move the boundary, and a
+ fallback record bypassed the signed boundary entirely. All of these were
+ reachable with write access to the cache store and no server contact.
+ `tests/Feature/LicenseOfflineTrustTest.php` proves the signed-only rule for
+ both the primary and the fallback store. **Installs upgrading should treat this
+ as a security-relevant upgrade.**
 
 ### Upgrade notes
 
@@ -202,6 +232,13 @@ approved Phase 1-4 work and the tests that actually prove it.
   the install performs **one online check** the next time it verifies, then
   stores the newly signed boundary. This is expected and is proven by
   `tests/Feature/FastPathSignedBoundaryTest.php`; no manual action is required.
+- Offline trust on upgrade: the offline/grace path now reads the signed payload
+  instead of the unsigned columns. A cached row whose **unsigned** `status`,
+  `expires_at`, or `offline_valid_until` disagreed with its signed payload (for
+  example a hand-edited row) is now resolved according to the signed payload, so
+  it may be denied where it was previously (incorrectly) allowed. This is the
+  intended, fail-closed behavior; no manual action is required. Proven by
+  `tests/Feature/LicenseOfflineTrustTest.php`.
 
 ## [1.0.1] - 2026-09-29
 
@@ -225,6 +262,11 @@ approved Phase 1-4 work and the tests that actually prove it.
 - Middleware changes: none.
 - Migration changes: none.
 - Route behavior changes: none.
+- Security note: this release also carries the later Unreleased offline-trust
+  hardening (the offline path trusts the signed payload, not the unsigned
+  columns). Installs running `1.0.1` should upgrade for that fix; see the
+  `[Unreleased]` Security section. No config, env, middleware, migration, or
+  route changes were introduced by it.
 
 ## [1.0.0] - 2026-09-29
 
