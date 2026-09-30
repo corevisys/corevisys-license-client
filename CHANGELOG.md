@@ -28,20 +28,38 @@ approved Phase 1-4 work and the tests that actually prove it.
 
 ## [Unreleased]
 
-### Security
+### Changed
 
-- The `cache_fallback_store` presence signal is now derived into a boolean
-  config key (`cache_fallback_store_explicit`) at config-build time, so no
-  `env()` call remains under `src/` and the decision survives `config:cache`.
-- A cache fallback that resolves to the SAME store as the primary is now
-  disabled — it cannot survive the primary failure it exists for. The packaged
-  default colliding with the app default is tolerated by boot validation and the
-  doctor reports why; an explicit collision fails validation.
-- Log/error sanitizing: an explicitly supplied secret is now redacted even when
-  it lands in an enum / "safe" context key or is shorter than the 24-char token
-  heuristic, and the activation failure path passes the submitted license key as
-  a known secret so a short key echoed back by a lower layer is stripped from
-  both the stored `last_error_message` and the log context.
+- `LicenseActivator` returns a generic failure message ("Activation failed.
+  Please check the key and try again.") for a `LicenseClientException`, so a
+  server body that echoes the submitted key is never surfaced — proven by
+  `LicenseKeyNonDisclosureTest::test_failed_activation_logs_no_raw_key_and_returns_a_generic_message`.
+- A signature-verification failure is logged at level `error` with
+  `reason_code = signature_verification_failed` — proven by
+  `LicenseMonitoringLogTest`. `LicenseVerifier::signatureFailureReason()` further
+  distinguishes `unknown_key_id` / `revoked_key_id` by matching the exception
+  message (log label only; the returned `LicenseStatus` stays
+  `signature_verification_failed`). Those two labels are code-only: no test in
+  this pass asserts them.
+
+### Fixed
+
+- `env()` removed from `src/`: the `cache_fallback_store` presence signal is
+  derived into a boolean config key (`cache_fallback_store_explicit`) at
+  config-build time, so nothing under `src/` reads the environment at runtime and
+  a new test (`SrcEnvironmentScanTest`) fails on any `env(` / `getenv(` under
+  `src/`.
+- A cache fallback that resolves to the SAME store as the primary is disabled —
+  it cannot survive the primary failure it exists for. The packaged default
+  colliding with the framework default is tolerated by boot validation and the
+  doctor reports why; an explicit collision fails validation (config-only proof
+  in `ConfigValidatorFallbackTest`).
+- Known secrets are always redacted from logs and stored error messages: an
+  explicitly supplied secret is stripped even in an enum / "safe" context key or
+  when shorter than the 24-char token heuristic, and a structured context value
+  skips only the token scrub when it matches its key's pattern (enum /
+  identifier / UUID) — known-secret and email scrubbing always apply — proven by
+  `LogSanitizerTest` and `LicenseVerifierRedactionTest`.
 
 ### Added
 
