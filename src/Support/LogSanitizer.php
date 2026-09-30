@@ -27,21 +27,36 @@ final class LogSanitizer
     private const TOKEN_MIN_LENGTH = 24;
 
     /**
-     * Context keys whose string values are structured identifiers / enum codes,
-     * not free-form text, and must never be token-scrubbed. Each is either a
-     * published identifier (key_id), a server-issued id (license_id), a public
-     * product identifier (product_code), or a fixed enum (status, reason_code).
-     * None is the raw license key.
+     * Enum context keys: their values are fixed machine codes, not free-form
+     * text. The length-based token scrub is skipped for a well-formed value so
+     * the operator signal survives.
      */
-    private const SAFE_CONTEXT_KEYS = [
+    private const ENUM_CONTEXT_KEYS = [
         'reason_code',
         'previous_reason_code',
         'status',
+    ];
+
+    /**
+     * Identifier context keys: published / server-issued identifiers. As with
+     * the enum keys, the token scrub is skipped only for a well-formed value
+     * (a UUID is 36 chars but must not be token-scrubbed).
+     */
+    private const IDENTIFIER_CONTEXT_KEYS = [
         'product_code',
         'key_id',
         'license_id',
         'license_type',
     ];
+
+    /** A bare lowercase enum token, at most 64 chars. */
+    private const ENUM_VALUE_PATTERN = '/^[a-z][a-z_]*$/';
+
+    /** A published identifier / UUID: letters, digits, dot, colon, hyphen. */
+    private const IDENTIFIER_VALUE_PATTERN = '/^[A-Za-z0-9_.:\-]{1,64}$/';
+
+    /** Longest value any structured context key may carry. */
+    private const STRUCTURED_VALUE_MAX_LENGTH = 64;
 
     /**
      * @param  array<int, string|null>  $knownSecrets  Raw values guaranteed to be sensitive.
@@ -89,18 +104,27 @@ final class LogSanitizer
     public static function scrubContext(array $context, array $knownSecrets = []): array
     {
         foreach ($context as $key => $value) {
-            // Structured identifier / enum fields are never token- or
-            // email-scrubbed: their values (e.g. "signature_verification_failed",
-            // "license_server_unavailable") look token-ish, and erasing them
-            // would destroy the very operator signal we need. An EXPLICITLY
-            // supplied secret still wins, so a short license key (below the
-            // heuristic token length) parked in a "safe" key cannot survive.
-            if (is_string($value) && in_array((string) $key, self::SAFE_CONTEXT_KEYS, true)) {
-                $context[$key] = self::scrubKnownSecrets($value, $knownSecrets);
-                continue;
-            }
-
             if (is_string($value)) {
+                $keyName = (string) $key;
+                $isStructuredKey = in_array($keyName, self::ENUM_CONTEXT_KEYS, true)
+                    || in_array($keyName, self::IDENTIFIER_CONTEXT_KEYS, true);
+
+                if ($isStructuredKey) {
+                    if (self::isWellFormedStructuredValue($keyName, $value)) {
+                        // A well-formed enum / identifier keeps its exact value —
+                        // the operator signal the doctor / monitor log relies on —
+                        // but an explicitly supplied secret and an echoed email
+                        // are still removed.
+                        $context[$key] = self::scrubEmails(self::scrubKnownSecrets($value, $knownSecrets));
+                    } else {
+                        // Anything else under a structured key is not a legitimate
+                        // enum / identifier; scrub it fully rather than trust it.
+                        $context[$key] = LicenseKeyRedactor::REDACTED;
+                    }
+
+                    continue;
+                }
+
                 $context[$key] = self::scrubMessage($value, $knownSecrets);
             } elseif (is_array($value)) {
                 $context[$key] = self::scrubContext($value, $knownSecrets);
@@ -108,6 +132,27 @@ final class LogSanitizer
         }
 
         return $context;
+    }
+
+    /**
+     * Whether a value is a well-formed enum / identifier for its context key —
+     * the only case where the token scrub may be skipped.
+     */
+    private static function isWellFormedStructuredValue(string $key, string $value): bool
+    {
+        if (strlen($value) > self::STRUCTURED_VALUE_MAX_LENGTH) {
+            return false;
+        }
+
+        if (in_array($key, self::ENUM_CONTEXT_KEYS, true)) {
+            return preg_match(self::ENUM_VALUE_PATTERN, $value) === 1;
+        }
+
+        if (in_array($key, self::IDENTIFIER_CONTEXT_KEYS, true)) {
+            return preg_match(self::IDENTIFIER_VALUE_PATTERN, $value) === 1;
+        }
+
+        return false;
     }
 
     private static function scrubEmails(string $message): string
