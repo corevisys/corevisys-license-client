@@ -325,11 +325,41 @@ return [
     | middleware.bypass_in_local: skip enforcement when the app is local.
     |   Default: false | Env: COREVISYS_LICENSE_BYPASS_LOCAL
     |   Production: MUST remain false in production.
+    |
+    | middleware.excluded_routes: route names and/or path patterns that
+    |   corevisys.license lets through WITHOUT a license check (and without any
+    |   server call). Entries are matched with Laravel's Str::is() against EACH
+    |   route's name and its path, so an entry may be a route name ("login",
+    |   "corevisys.license.activate"), a literal path ("license/activate") or a
+    |   wildcard path ("admin/health/*"). This exists so an operator can never be
+    |   locked out: the activation screen, auth routes and health probes must stay
+    |   reachable while the license is invalid.
+    |   Default: the built-in activation routes plus the conventional
+    |     login/logout/health/up names AND paths. Empty or null means the same
+    |     defaults apply (see ConfigDefaults). Not environment-driven.
+    |   Production: add your own always-open routes (e.g. a status page or your
+    |     payment/checkout flow) here; keep the activation and auth routes listed
+    |     so a lapsed license can always be repaired. The activation route is
+    |     ALWAYS exempt regardless of this list (hard-coded guard in
+    |     EnsureValidLicense), so removing it can never create a redirect loop.
     */
     'middleware' => [
         'redirect_route' => null,
         'abort_status' => 403,
         'bypass_in_local' => env('COREVISYS_LICENSE_BYPASS_LOCAL', false),
+
+        'excluded_routes' => [
+            // Built-in activation screen — by route name (GET + POST) and by path.
+            'corevisys.license.activate',
+            'corevisys.license.activate.store',
+            'license/activate',
+            // Conventional auth/health routes — listed by name and by path so
+            // either form matches regardless of how the app names them.
+            'login',
+            'logout',
+            'health',
+            'up',
+        ],
     ],
 
     /*

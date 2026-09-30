@@ -65,6 +65,7 @@ final class ConfigValidator
             self::gracePeriodError($config),
             self::cacheDriverError($config),
             self::fallbackStoreError($config, $availableCacheStores),
+            self::excludedRoutesError($config),
             self::notificationChannelsError($config),
             self::notificationThrottleError($config),
         ] as $error) {
@@ -185,6 +186,47 @@ final class ConfigValidator
                 if (! $isPackagedDefault) {
                     return 'The license cache_fallback_store must differ from the primary cache store when cache_driver is "cache".';
                 }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * middleware.excluded_routes, when present, must be a flat list of
+     * non-empty strings (route names and/or Str::is patterns). An absent,
+     * null or empty-list value is valid: the middleware falls back to its
+     * documented defaults, so "empty" can never be mistaken for "exclude
+     * everything". The message names the offending TYPE only and never prints
+     * a route value — kept deliberately generic so no config data leaks.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function excludedRoutesError(array $config): ?string
+    {
+        $middleware = $config['middleware'] ?? null;
+
+        if ($middleware === null) {
+            return null; // middleware block absent — defaults apply
+        }
+
+        if (! is_array($middleware)) {
+            return 'The license middleware configuration must be an array.';
+        }
+
+        $excluded = $middleware['excluded_routes'] ?? null;
+
+        if ($excluded === null) {
+            return null; // absent/null — documented defaults apply
+        }
+
+        if (! is_array($excluded)) {
+            return 'The license middleware.excluded_routes must be an array of route-name or path-pattern strings.';
+        }
+
+        foreach ($excluded as $entry) {
+            if (! is_string($entry) || trim($entry) === '') {
+                return 'The license middleware.excluded_routes must contain only non-empty route-name or path-pattern strings.';
             }
         }
 
