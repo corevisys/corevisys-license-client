@@ -114,17 +114,17 @@ class LicenseVerifier
             $this->log('error', 'CoreVisys license: license server unavailable.', $e, [
                 'reason_code' => 'license_server_unavailable',
                 'product_code' => $this->productCode,
-            ]);
+            ], [$licenseKey]);
             Event::dispatch(new LicenseServerUnavailableEvent(null, [
                 'reason_code' => 'license_server_unavailable',
-                'message' => LogSanitizer::scrubMessage($e->getMessage()),
+                'message' => LogSanitizer::scrubMessage($e->getMessage(), [$licenseKey]),
             ]));
 
-            return $this->fallbackToCache($cached, $e->getMessage());
+            return $this->fallbackToCache($cached, $e->getMessage(), [$licenseKey]);
         } catch (SignatureVerificationException $e) {
             $this->log('error', 'CoreVisys license: signature verification failed.', $e, [
                 'reason_code' => $this->signatureFailureReason($e),
-            ]);
+            ], [$licenseKey]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => 'signature_verification_failed']));
 
             // A response we cannot trust is treated as no response at all —
@@ -138,10 +138,10 @@ class LicenseVerifier
             // callers always get a LicenseStatus and can inspect ->status.
             $this->log('warning', 'CoreVisys license: check request rejected.', $e, [
                 'reason_code' => $e->errorCode(),
-            ]);
+            ], [$licenseKey]);
             $this->storage->put($this->productCode, [
                 'last_error_at' => now(),
-                'last_error_message' => LogSanitizer::scrubMessage($e->getMessage()),
+                'last_error_message' => LogSanitizer::scrubMessage($e->getMessage(), [$licenseKey]),
             ]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => $e->errorCode()]));
 
@@ -336,11 +336,11 @@ class LicenseVerifier
         return $status;
     }
 
-    protected function fallbackToCache(?array $cached, string $errorMessage): LicenseStatus
+    protected function fallbackToCache(?array $cached, string $errorMessage, array $knownSecrets = []): LicenseStatus
     {
         $this->storage->put($this->productCode, [
             'last_error_at' => now(),
-            'last_error_message' => LogSanitizer::scrubMessage($errorMessage),
+            'last_error_message' => LogSanitizer::scrubMessage($errorMessage, $knownSecrets),
         ]);
 
         if (! $cached || ! ($this->config['allow_offline_verification'] ?? true)) {
@@ -620,20 +620,27 @@ class LicenseVerifier
 
     /**
      * @param  array<string, mixed>  $context
+     * @param  array<int, string|null>  $knownSecrets  Raw secrets guaranteed to be
+     *                                                 sensitive; supplied by the caller
+     *                                                 that knows the submitted key, so a
+     *                                                 key-bearing lower-layer message is
+     *                                                 stripped even when shorter than the
+     *                                                 token heuristic. Default [] leaves
+     *                                                 every existing caller unchanged.
      */
-    protected function log(string $level, string $message, ?\Throwable $e = null, array $context = []): void
+    protected function log(string $level, string $message, ?\Throwable $e = null, array $context = [], array $knownSecrets = []): void
     {
         if (! ($this->config['logging']['enabled'] ?? true)) {
             return;
         }
 
         if ($e !== null) {
-            $context['error'] = $e->getMessage();
+            $context['error'] = LogSanitizer::scrubMessage($e->getMessage(), $knownSecrets);
         }
 
         Log::channel($this->config['logging']['channel'] ?? 'stack')->{$level}(
-            LogSanitizer::scrubMessage($message),
-            LogSanitizer::scrubContext($context)
+            LogSanitizer::scrubMessage($message, $knownSecrets),
+            LogSanitizer::scrubContext($context, $knownSecrets)
         );
     }
 }
