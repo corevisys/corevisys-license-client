@@ -48,7 +48,7 @@ class LicenseActivator
 
             if (! $response->success || ! $status->isActive()) {
                 return ActivationResult::failure(
-                    $response->message ?? 'Activation was rejected by the server.',
+                    $this->safeServerMessage($response->message, $licenseKey) ?? 'Activation was rejected by the server.',
                     'activation_rejected'
                 );
             }
@@ -77,7 +77,7 @@ class LicenseActivator
 
             Event::dispatch(new LicenseActivated($status));
 
-            return ActivationResult::success($response->message ?? 'License activated successfully.', $status);
+            return ActivationResult::success($this->safeServerMessage($response->message, $licenseKey) ?? 'License activated successfully.', $status);
         } catch (LicenseClientException $e) {
             // Diagnostic detail is logged (redacted) but the value returned to
             // callers is a generic, key-free message.
@@ -99,6 +99,23 @@ class LicenseActivator
                 $e->errorCode()
             );
         }
+    }
+
+    /**
+     * Scrub a server-supplied envelope message before it can reach any caller
+     * (command output, controller flash, or any ActivationResult consumer).
+     * The server may echo the submitted key back in its validation text, so
+     * the key is passed as a known secret; long opaque tokens and email
+     * addresses are removed as well. Returns null for null/empty input so the
+     * caller's generic fallback message applies.
+     */
+    protected function safeServerMessage(?string $message, ?string $knownSecret = null): ?string
+    {
+        if ($message === null || $message === '') {
+            return null;
+        }
+
+        return LogSanitizer::scrubMessage($message, array_filter([$knownSecret]));
     }
 
     /**

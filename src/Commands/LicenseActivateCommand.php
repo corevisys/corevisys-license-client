@@ -10,7 +10,7 @@ class LicenseActivateCommand extends Command
 {
     protected $signature = 'corevisys:license:activate {key? : License key to activate (omit to be prompted securely; defaults to COREVISYS_LICENSE_KEY)}';
 
-    protected $description = 'Activate this installation against the CoreVisys license server.';
+    protected $description = 'Activate this installation against the CoreVisys license server. Run with no arguments to be prompted for the key (recommended): passing it as an argument leaves the raw key in your shell history and process list.';
 
     public function handle(LicenseClientInterface $license): int
     {

@@ -3,6 +3,27 @@
 All notable changes to `corevisys/laravel-license-client` are documented
 here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## Not yet done
+
+> Status honesty: Phases 5-9 are **NOT APPROVED and NOT COMPLETE**. None of the
+> work in this branch may be described as delivering them.
+
+- Phase 5 (logging/monitoring events, scheduled health check, admin
+  notifications with throttling): not approved, not complete.
+- Phase 6 (route-enforcement lockout-safety: excluded routes, redirect-loop
+  guard, offline-under-outage allow): not approved, not complete.
+- Phase 7 (exhaustive test-gap fill and CI version matrix): not approved, not
+  complete.
+- Phase 8 (`corevisys:license:status`/`:check` operational hardening and
+  `docs/RUNBOOK.md`): not approved, not complete. `docs/UPGRADING.md` still
+  carries a "to be completed" placeholder for the staged upgrade procedure.
+- Phase 9 (`docs/ROLLOUT.md` and the staged-rollout guide): not approved, not
+  complete.
+
+Some code touching these areas exists in this branch but is UNREVIEWED; it must
+not be treated as delivered. The `[Unreleased]` entries below describe only the
+approved Phase 1-4 work and the tests that actually prove it.
+
 ## [Unreleased]
 
 ### Added
@@ -46,10 +67,13 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
 - `.gitignore`: now ignores `.env`, `.env.*` (except `.env.example`), `*.pem`,
   `*.key`, and local license file/cache storage paths.
 - `CoreVisys\License\Support\LicenseKeyRedactor`: one choke point for every
-  human-facing representation of a key. `mask()` returns a short prefix/suffix
-  form (or `[redacted]` for short/empty/null keys); `fingerprint()` returns a
-  deterministic, key-free HMAC used for correlation. Unit-tested for short,
-  empty, null, and minimum-length keys.
+  human-facing representation of a key. `mask()` reveals ONLY the trailing four
+  characters, and only for keys of 16+ characters (shorter, empty, or null keys
+  are fully `[redacted]`; no leading characters are ever shown);
+  `fingerprint()` returns a deterministic, key-free HMAC-SHA256 (12 hex chars)
+  keyed by the application key, so the same key yields a stable value per
+  install but a different value across installs. Unit-tested for short, empty,
+  null, and minimum-length keys, and for fingerprint stability/variation.
 - `CoreVisys\License\Support\LogSanitizer`: scrubs known secrets, email
   addresses, and long opaque tokens from free-form diagnostic text and (deeply)
   from log context arrays before anything is stored or logged.
@@ -59,8 +83,9 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
 - Every key in `config/corevisys-license.php` is now documented in place with
   its purpose, default, env var name, and production guidance. No default or
   behavior changed.
-- Documentation: the client baseline is recorded as 139 tests / 318 assertions
-  (previously 46/81 after Phase 2, and 45/77 originally).
+- Documentation: the client baseline is recorded as 174 tests / 409 assertions
+  (previously 153/359 after the Phase 1-4C checkout, 46/81 after Phase 2, and
+  45/77 originally).
 - `LicenseVerifier` offline-grace log calls now pass a real context array (the
   `log()` helper signature is `(level, message, ?Throwable, array)`); the two
   offline-grace warnings previously passed the context in the exception slot
@@ -68,6 +93,14 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The storage fallback collision check now compares `cache_fallback_store`
+  against the **resolved** primary cache store (an explicit `cache_store`, or
+  the application's `cache.default` when `cache_store` is null), matching
+  `ConfigValidator` and the doctor command. Previously, with `cache_store`
+  unset, a fallback equal to the app's default store was silently written to
+  the same store. The packaged default (`file`) colliding with an app default of
+  `file` stays tolerated (out-of-the-box state); a deliberately-set collision is
+  dropped so the mirror is a no-op. No stored data or trust rule changed.
 - Storage resilience: when the primary store (database table, or cache store in
   `cache` mode) throws a connection/query error, `LicenseStorage` now falls back
   to `cache_fallback_store` for reads and mirrors writes to it. A primary that
@@ -96,6 +129,20 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Fast-path cache trust (security-relevant upgrade). The pre-existing fast path
+  (a cached record whose `next_check_at` was still in the future) trusted the
+  **unsigned** cache columns — `status`, `expires_at`, and `next_check_at` —
+  without re-verifying the cached signature. An attacker with write access to
+  the cache store could hand-edit `status` to `active` and push `next_check_at`
+  into the future to keep serving a "valid" license with no server contact.
+  Addressed in this Unreleased release: the fast path now re-verifies the cached
+  signed payload against LOCAL key material, takes `status`/`expires_at` from
+  the verified payload instead of the columns, and forces an online re-check
+  once the signed `offline_valid_until` has passed. Stated only as far as the
+  tests prove it: revoked-key, unknown-key, tampered-payload, and
+  edited-`next_check_at`/`status`/`offline_valid_until` cases are covered by
+  `tests/Feature/FastPathTrustTest.php`. **Installs upgrading should treat this
+  as a security-relevant upgrade.**
 - The raw license key can no longer reach any operator- or browser-facing
   surface. Concretely:
   - The activation screen's key input is `type="password"` with

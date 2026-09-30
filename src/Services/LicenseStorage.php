@@ -37,6 +37,9 @@ class LicenseStorage implements LicenseStorageInterface
      */
     public const ORIGIN_MARKER = '__fallback_origin';
 
+    /** The fallback store name shipped as the packaged default. */
+    protected const PACKAGED_DEFAULT_FALLBACK_STORE = 'file';
+
     public function __construct(protected array $config)
     {
     }
@@ -196,6 +199,14 @@ class LicenseStorage implements LicenseStorageInterface
     /**
      * The configured fallback cache store name, or null when disabled or when
      * it would be identical to the primary store in 'cache' mode.
+     *
+     * The comparison uses the *resolved* primary store name — an explicit
+     * cache_store, or the application's default cache store — so a fallback
+     * that merely equals the default store is detected too. This mirrors
+     * {@see \CoreVisys\License\Support\ConfigValidator} and the doctor command.
+     * The packaged default ("file") colliding with an app default of "file" is
+     * the out-of-the-box state and is tolerated; a deliberately-set fallback
+     * that collides is a no-op and is dropped.
      */
     protected function fallbackStoreName(): ?string
     {
@@ -205,8 +216,11 @@ class LicenseStorage implements LicenseStorageInterface
             return null;
         }
 
-        if (! $this->usingDatabase() && $name === $this->cacheStoreName()) {
-            return null;
+        if (! $this->usingDatabase() && $name === $this->resolvedPrimaryCacheStoreName()) {
+            $isPackagedDefault = $name === self::PACKAGED_DEFAULT_FALLBACK_STORE
+                && ! $this->hasExplicitFallbackSetting();
+
+            return $isPackagedDefault ? $name : null;
         }
 
         return $name;
@@ -217,6 +231,48 @@ class LicenseStorage implements LicenseStorageInterface
         $store = $this->config['cache_store'] ?? null;
 
         return (is_string($store) && trim($store) !== '') ? $store : null;
+    }
+
+    /**
+     * The name the primary cache store resolves to: an explicit cache_store, or
+     * the application's default cache store. Returns null only when neither is
+     * known, in which case no same-name collision can be asserted.
+     */
+    protected function resolvedPrimaryCacheStoreName(): ?string
+    {
+        $explicit = $this->cacheStoreName();
+
+        if ($explicit !== null) {
+            return $explicit;
+        }
+
+        try {
+            if (function_exists('config')) {
+                $default = config('cache.default');
+
+                return (is_string($default) && $default !== '') ? $default : null;
+            }
+        } catch (\Throwable) {
+            // fall through
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the application explicitly set COREVISYS_LICENSE_CACHE_FALLBACK_STORE.
+     * Reads the raw env only to distinguish "packaged default" from "explicitly
+     * configured" — never to obtain a secret.
+     */
+    protected function hasExplicitFallbackSetting(): bool
+    {
+        try {
+            $value = function_exists('env') ? env('COREVISYS_LICENSE_CACHE_FALLBACK_STORE') : null;
+
+            return $value !== null && $value !== '';
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     protected function cacheKey(string $productCode): string
