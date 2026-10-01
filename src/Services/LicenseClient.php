@@ -8,7 +8,6 @@ use CoreVisys\License\Contracts\LicenseStorageInterface;
 use CoreVisys\License\DTOs\ActivationResult;
 use CoreVisys\License\DTOs\LicenseStatus;
 use CoreVisys\License\Events\LicenseDeactivated;
-use CoreVisys\License\Exceptions\LicenseClientException;
 
 /**
  * The single entry point the rest of the application talks to (also bound
@@ -116,19 +115,9 @@ class LicenseClient implements LicenseClientInterface
             return true;
         }
 
-        try {
-            $response = $this->apiRequestHandler->post('license/deactivate', [
-                'license_key' => $key,
-                'product_code' => $this->productCode,
-                'domain' => $this->fingerprintGenerator->normalizedDomain(),
-                'fingerprint' => $this->fingerprintGenerator->generate(),
-                'reason' => 'application_removed',
-            ]);
-
-            $success = (bool) $response->success;
-        } catch (LicenseClientException) {
-            $success = false;
-        }
+        // Delegate to LicenseActivator which owns the full error-handling policy
+        // (404 → already deactivated, 403 → rejected, network → soft-fail).
+        $success = $this->activator->deactivate($key);
 
         $this->clearCache();
 
