@@ -4,6 +4,7 @@ namespace CoreVisys\License\Tests;
 
 use CoreVisys\License\CoreVisysServiceProvider;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
 abstract class TestCase extends BaseTestCase
@@ -24,6 +25,12 @@ abstract class TestCase extends BaseTestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // No test may reach the real network: any HTTP call that is not
+        // explicitly faked with Http::fake() throws a StrayRequestException.
+        // A test that genuinely needs a live call must opt out with
+        // Http::allowStrayRequests() (the `live` group does exactly that).
+        Http::preventStrayRequests();
 
         Cache::flush();
         Cache::store('file')->flush();
