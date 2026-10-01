@@ -104,7 +104,7 @@ class LicenseVerifier
             $this->signatureVerifier->verify($response);
 
             $status = $response->toLicenseStatus();
-            if ($status->productCode !== null && $status->productCode !== $this->productCode) {
+            if (empty($status->productCode) || $status->productCode !== $this->productCode) {
                 $this->log('warning', 'CoreVisys license: product code mismatch in check response.', null, [
                     'reason_code' => 'product_code_mismatch',
                     'response_product' => $status->productCode,
@@ -192,8 +192,8 @@ class LicenseVerifier
             return null;
         }
 
-        // SEC-007: Product code mismatch fails fast path
-        if (isset($data['product_code']) && $data['product_code'] !== $this->productCode) {
+        // SEC-007: Missing or mismatched product code fails fast path
+        if (empty($data['product_code']) || $data['product_code'] !== $this->productCode) {
             return null;
         }
 
@@ -432,8 +432,8 @@ class LicenseVerifier
             return null;
         }
 
-        // SEC-007: Product code mismatch fails offline grace trust
-        if (isset($data['product_code']) && $data['product_code'] !== $this->productCode) {
+        // SEC-007: Missing or mismatched product code fails offline grace trust
+        if (empty($data['product_code']) || $data['product_code'] !== $this->productCode) {
             return null;
         }
 
@@ -537,7 +537,7 @@ class LicenseVerifier
 
     protected function statusFromCacheRecord(array $cached, bool $offline, bool $alreadyValidated): LicenseStatus
     {
-        $productMatches = empty($cached['product_code']) || $cached['product_code'] === $this->productCode;
+        $productMatches = !empty($cached['product_code']) && $cached['product_code'] === $this->productCode;
 
         $status = new LicenseStatus(
             valid: $productMatches

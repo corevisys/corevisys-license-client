@@ -53,8 +53,8 @@ class LicenseActivator
                 );
             }
 
-            // SEC-007: Reject cross-product activation if response productCode does not match configured productCode
-            if ($status->productCode !== null && $status->productCode !== $this->productCode) {
+            // SEC-007: Reject cross-product activation if response productCode is missing or does not match configured productCode
+            if (empty($status->productCode) || $status->productCode !== $this->productCode) {
                 $this->log('warning', 'CoreVisys license: product code mismatch on activation.', [
                     'reason_code' => 'product_code_mismatch',
                     'response_product' => $status->productCode,

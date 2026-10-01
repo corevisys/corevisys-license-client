@@ -179,4 +179,132 @@ class CrossProductPackageTest extends TestCase
         $status = $this->app->make(LicenseClientInterface::class)->check();
         $this->assertTrue($status->valid);
     }
+
+    public function test_activation_rejects_response_with_missing_product_code(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/activate' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_no_prod_activate',
+                'status' => 'active',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $result = $this->app->make(LicenseClientInterface::class)->activate('NO-PROD-KEY');
+
+        $this->assertFalse($result->success, 'Activation with missing product_code must fail.');
+        $this->assertSame('product_code_mismatch', $result->errorCode);
+    }
+
+    public function test_online_check_rejects_response_with_missing_product_code(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/check' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_no_prod_check',
+                'status' => 'active',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertFalse($status->valid, 'Online check with missing product_code must yield invalid status.');
+        $this->assertSame('product_code_mismatch', $status->status);
+    }
+
+    public function test_fast_path_rejects_cached_record_with_missing_product_code(): void
+    {
+        $payload = [
+            'license_id' => 'lic_fast_path_no_prod',
+            'status' => 'active',
+            'expires_at' => now()->addYear()->toIso8601String(),
+            'issued_at' => now()->subMinute()->toIso8601String(),
+            'offline_valid_until' => now()->addDays(7)->toIso8601String(),
+            'is_grace_period' => false,
+        ];
+        $envelope = $this->signedEnvelope($payload);
+
+        /** @var LicenseStorageInterface $storage */
+        $storage = $this->app->make(LicenseStorageInterface::class);
+        $storage->putPublicKey('test-key-1', $this->keyPair()['public'], 86400);
+        $storage->putPublicKeyMetadata([
+            'available_keys' => [
+                ['key_id' => 'test-key-1', 'public_key' => $this->keyPair()['public']],
+            ],
+            'revoked_key_ids' => [],
+        ], 86400);
+
+        $storage->put(self::CONFIGURED_PRODUCT, [
+            'license_id' => $payload['license_id'],
+            'status' => $payload['status'],
+            'signed_payload' => json_encode($payload, JSON_UNESCAPED_SLASHES),
+            'signature' => $envelope['signature'],
+            'key_id' => 'test-key-1',
+            'issued_at' => $payload['issued_at'],
+            'offline_valid_until' => $payload['offline_valid_until'],
+            'is_grace_period' => false,
+            'expires_at' => $payload['expires_at'],
+            'last_successful_check_at' => now()->subHour(),
+            'next_check_at' => now()->addDay(),
+        ]);
+
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response([], 500),
+            '*/api/v1/license/check' => Http::response([], 500),
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertFalse($status->valid, 'Fast path must reject record with missing product_code.');
+    }
+
+    public function test_offline_grace_path_rejects_cached_record_with_missing_product_code(): void
+    {
+        $payload = [
+            'license_id' => 'lic_offline_no_prod',
+            'status' => 'active',
+            'expires_at' => now()->addYear()->toIso8601String(),
+            'issued_at' => now()->subMinute()->toIso8601String(),
+            'offline_valid_until' => now()->addDays(7)->toIso8601String(),
+            'is_grace_period' => false,
+        ];
+        $envelope = $this->signedEnvelope($payload);
+
+        /** @var LicenseStorageInterface $storage */
+        $storage = $this->app->make(LicenseStorageInterface::class);
+        $storage->putPublicKey('test-key-1', $this->keyPair()['public'], 86400);
+        $storage->putPublicKeyMetadata([
+            'available_keys' => [
+                ['key_id' => 'test-key-1', 'public_key' => $this->keyPair()['public']],
+            ],
+            'revoked_key_ids' => [],
+        ], 86400);
+
+        $storage->put(self::CONFIGURED_PRODUCT, [
+            'license_id' => $payload['license_id'],
+            'status' => $payload['status'],
+            'signed_payload' => json_encode($payload, JSON_UNESCAPED_SLASHES),
+            'signature' => $envelope['signature'],
+            'key_id' => 'test-key-1',
+            'issued_at' => $payload['issued_at'],
+            'offline_valid_until' => $payload['offline_valid_until'],
+            'is_grace_period' => false,
+            'expires_at' => $payload['expires_at'],
+            'last_successful_check_at' => now()->subHours(2),
+            'next_check_at' => now()->subMinute(),
+        ]);
+
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response([], 500),
+            '*/api/v1/license/check' => Http::response([], 500),
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->check();
+
+        $this->assertFalse($status->valid, 'Offline grace must reject record with missing product_code.');
+    }
 }
