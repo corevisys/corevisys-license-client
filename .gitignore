@@ -17,3 +17,9 @@ composer.lock
 # Local license file/cache storage (file-store fallback)
 /storage/corevisys/
 /storage/app/corevisys/
+
+# Dumps and temporary files
+*.sql
+*.sqlite
+*.bak
+.rnd
