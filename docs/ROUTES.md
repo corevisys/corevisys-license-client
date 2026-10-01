@@ -69,6 +69,17 @@ empty list) are:
 | `login`, `logout` | Conventional auth routes |
 | `health`, `up` | Conventional health / liveness probes |
 
+> **Warning — keep this list in sync with your actual route names.** Each
+> `excluded_routes` entry is matched against the route **name** and the URL
+> **path**. Renaming a host route (or listing a name that does not exist, or a
+> stale name from an older release) silently stops matching, so that route
+> becomes **protected** the next time it is hit — a common cause of an
+> unexpected lockout after a deploy that renamed routes. After any change to
+> route names, re-run `php artisan route:list --path=license` and confirm every
+> route you intend to keep open is still listed, then `php artisan config:clear`.
+> The built-in activation screen is exempt unconditionally (below), so it is the
+> one route that cannot be locked out by an out-of-date list.
+
 ### The activation route is ALWAYS exempt
 
 Independently of `excluded_routes`, `EnsureValidLicense::isActivationRequest()`

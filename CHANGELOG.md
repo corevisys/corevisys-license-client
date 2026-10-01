@@ -16,19 +16,45 @@ here. This project adheres to [Semantic Versioning](https://semver.org/).
   guard, offline-under-outage allow): implemented on this branch, NOT yet
   approved by the reviewer. The `[Unreleased]` entries describe the
   implementation; they are not a claim of delivery until reviewed.
-- Phase 7 (exhaustive test-gap fill and CI version matrix): not approved, not
-  complete.
+- Phase 7 (exhaustive test-gap fill and CI version matrix): implemented on
+  `review/phase-7-9`, ready for review, NOT yet approved. The `[Unreleased]` →
+  "Phase 7-9 — ready for review" entries describe the implementation.
 - Phase 8 (`corevisys:license:status`/`:check` operational hardening and
-  `docs/RUNBOOK.md`): not approved, not complete. `docs/UPGRADING.md` still
-  carries a "to be completed" placeholder for the staged upgrade procedure.
-- Phase 9 (`docs/ROLLOUT.md` and the staged-rollout guide): not approved, not
-  complete.
+  `docs/RUNBOOK.md`): implemented on `review/phase-7-9`, ready for review, NOT
+  yet approved. The `docs/UPGRADING.md` "to be completed" placeholder has been
+  replaced by the ordered upgrade procedure.
+- Phase 9 (`docs/ROLLOUT.md` and the staged-rollout guide): implemented on
+  `review/phase-7-9`, ready for review, NOT yet approved.
 
 Some code touching these areas exists in this branch but is UNREVIEWED; it must
 not be treated as delivered. The `[Unreleased]` entries below describe only the
 approved Phase 1-4 work and the tests that actually prove it.
 
 ## [Unreleased]
+
+### Phase 7-9 — ready for review
+
+The work below was completed on `review/phase-7-9` and is **ready for review**.
+It is not a claim of approval; it is submitted for the reviewer's sign-off.
+
+- The live-server round-trip test is now hermetic by default: it reads
+  `COREVISYS_TEST_LICENSE_KEY` and `COREVISYS_TEST_SERVER_URL`, skips when they
+  are unset, is tagged `#[Group('live')]`, and is excluded from the default
+  suite in `phpunit.xml`. The previously committed license key was removed.
+- The suite can no longer reach the real network: the shared `TestCase` installs
+  `Http::preventStrayRequests()`, and `StrayRequestGuardTest` proves an unfaked
+  call fails with a `StrayRequestException` that is never mistaken for an offline
+  `ConnectionException`. The `live` group opts out via `Http::allowStrayRequests()`.
+- `docs/TEST_COVERAGE.md`: every required scenario mapped to its proving test.
+- `.github/workflows/tests.yml`: a PHP 8.2/8.3 x Laravel 10/11/12 matrix
+  (orchestra/testbench 8/9/10), no excluded cells, `live` excluded via phpunit.xml.
+- `CommandContractTest` pins `corevisys:license:status`/`:check`/`:doctor`
+  registration, check exit codes (`0` valid / `1` invalid) and key
+  non-disclosure; `docs/RUNBOOK.md` documents command exit codes and operations.
+- `docs/UPGRADING.md` is complete (ordered upgrade procedure, "Upgrading from
+  1.0.1", and the response-contract change process); `docs/ROLLOUT.md` adds the
+  staged rollout and post-upgrade smoke checklist; `docs/ROUTES.md` warns that
+  `excluded_routes` must stay in sync with host route names.
 
 ### Changed
 
