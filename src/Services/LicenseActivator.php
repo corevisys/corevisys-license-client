@@ -53,6 +53,20 @@ class LicenseActivator
                 );
             }
 
+            // SEC-007: Reject cross-product activation if response productCode does not match configured productCode
+            if ($status->productCode !== null && $status->productCode !== $this->productCode) {
+                $this->log('warning', 'CoreVisys license: product code mismatch on activation.', [
+                    'reason_code' => 'product_code_mismatch',
+                    'response_product' => $status->productCode,
+                    'configured_product' => $this->productCode,
+                ], [$licenseKey]);
+
+                return ActivationResult::failure(
+                    "License product code ({$status->productCode}) does not match application product code ({$this->productCode}).",
+                    'product_code_mismatch'
+                );
+            }
+
             $this->storage->put($this->productCode, [
                 'license_id' => $status->licenseId,
                 'license_key' => $licenseKey,

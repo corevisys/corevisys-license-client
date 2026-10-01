@@ -103,6 +103,17 @@ class LicenseVerifier
 
             $this->signatureVerifier->verify($response);
 
+            $status = $response->toLicenseStatus();
+            if ($status->productCode !== null && $status->productCode !== $this->productCode) {
+                $this->log('warning', 'CoreVisys license: product code mismatch in check response.', null, [
+                    'reason_code' => 'product_code_mismatch',
+                    'response_product' => $status->productCode,
+                    'configured_product' => $this->productCode,
+                ], [$licenseKey]);
+
+                return LicenseStatus::invalid('product_code_mismatch');
+            }
+
             $status = $this->finalizeOnlineStatus($response, $cached);
 
             Event::dispatch(new LicenseChecked($status));
@@ -178,6 +189,11 @@ class LicenseVerifier
         $data = $this->verifiedSignedPayload($cached);
 
         if ($data === null) {
+            return null;
+        }
+
+        // SEC-007: Product code mismatch fails fast path
+        if (isset($data['product_code']) && $data['product_code'] !== $this->productCode) {
             return null;
         }
 
@@ -416,6 +432,11 @@ class LicenseVerifier
             return null;
         }
 
+        // SEC-007: Product code mismatch fails offline grace trust
+        if (isset($data['product_code']) && $data['product_code'] !== $this->productCode) {
+            return null;
+        }
+
         $expiresAt = $this->parseDate($data['expires_at'] ?? null);
         $offlineUntil = $this->parseDate($data['offline_valid_until'] ?? null);
 
@@ -480,7 +501,7 @@ class LicenseVerifier
         $record['issued_at'] = $this->parseDate($data['issued_at'] ?? null);
         $record['license_id'] = $data['license_id'] ?? null;
         $record['license_type'] = $data['license_type'] ?? null;
-        $record['product_code'] = $data['product_code'] ?? $this->productCode;
+        $record['product_code'] = $data['product_code'] ?? null;
         $record['features'] = $this->normalizeFeatures($data['features'] ?? null);
         $record['is_grace_period'] = (bool) ($data['is_grace_period'] ?? false);
 
@@ -516,8 +537,11 @@ class LicenseVerifier
 
     protected function statusFromCacheRecord(array $cached, bool $offline, bool $alreadyValidated): LicenseStatus
     {
+        $productMatches = empty($cached['product_code']) || $cached['product_code'] === $this->productCode;
+
         $status = new LicenseStatus(
-            valid: ($cached['status'] ?? null) === 'active'
+            valid: $productMatches
+                && ($cached['status'] ?? null) === 'active'
                 && (empty($cached['expires_at']) || Carbon::parse($cached['expires_at'])->isFuture()),
             status: $cached['status'] ?? 'unknown',
             licenseId: $cached['license_id'] ?? null,
