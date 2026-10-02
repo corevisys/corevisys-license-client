@@ -160,58 +160,6 @@ class LicenseActivator
         );
     }
 
-    /**
-     * Notify the license server that this installation is being deactivated.
-     *
-     * Error handling policy (mirrors the scope in FIX-004):
-     *
-     *  - 404: The license is not found on the server (already deactivated or
-     *         key was rotated). Treat as success so the local cache is always
-     *         cleared — the server has nothing to deactivate.
-     *  - 403: Server rejected the deactivation (domain/fingerprint mismatch or
-     *         the server-side authorisation check failed). Return false so the
-     *         caller knows the server rejected it (but local cache is still
-     *         cleared by LicenseClient).
-     *  - Network / 5xx: Server unreachable. Return false (soft-fail). The local
-     *         cache is always cleared by LicenseClient regardless.
-     *
-     * @param  string  $licenseKey  Plain-text license key.
-     */
-    public function deactivate(string $licenseKey): bool
-    {
-        $fingerprint = $this->fingerprint->generate();
-
-        try {
-            $response = $this->api->post('license/deactivate', [
-                'license_key'  => $licenseKey,
-                'product_code' => $this->productCode,
-                'domain'       => $this->fingerprint->normalizedDomain(),
-                'ip'           => request()?->ip() ?? '127.0.0.1',
-                'fingerprint'  => $fingerprint,
-                'reason'       => 'application_removed',
-            ]);
-
-            $success = (bool) $response->success;
-
-            $this->log('info', 'CoreVisys license: deactivation request sent.', [
-                'product_code' => $this->productCode,
-                'success'      => $success,
-                'reason_code'  => $success ? 'deactivated' : 'server_rejected',
-            ], [$licenseKey]);
-
-            return $success;
-        } catch (LicenseClientException $e) {
-            // Any failure (generic 403, 404, network, 5xx) = failure; local cache is still cleared
-            // but the server binding may remain.
-            $this->log('warning', 'CoreVisys license: deactivation failed on the server. Local cache will be cleared, but the server binding may remain.', [
-                'reason_code'  => $e->errorCode(),
-                'product_code' => $this->productCode,
-                'error'        => $e->getMessage(),
-            ], [$licenseKey]);
-
-            return false;
-        }
-    }
 
     protected function packageVersion(): string
     {

@@ -8,6 +8,9 @@ use CoreVisys\License\Contracts\LicenseStorageInterface;
 use CoreVisys\License\DTOs\ActivationResult;
 use CoreVisys\License\DTOs\LicenseStatus;
 use CoreVisys\License\Events\LicenseDeactivated;
+use CoreVisys\License\Exceptions\LicenseClientException;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 
 /**
  * The single entry point the rest of the application talks to (also bound
@@ -115,14 +118,52 @@ class LicenseClient implements LicenseClientInterface
             return true;
         }
 
-        // Delegate to LicenseActivator which owns the full error-handling policy
-        // (404 → already deactivated, 403 → rejected, network → soft-fail).
-        $success = $this->activator->deactivate($key);
+        $fingerprint = $this->fingerprintGenerator->generate();
+
+        try {
+            $response = $this->apiRequestHandler->post('license/deactivate', [
+                'license_key'  => $key,
+                'product_code' => $this->productCode,
+                'domain'       => $this->fingerprintGenerator->normalizedDomain(),
+                'ip'           => request()?->ip() ?? '127.0.0.1',
+                'fingerprint'  => $fingerprint,
+                'reason'       => 'application_removed',
+            ]);
+
+            $success = (bool) $response->success;
+
+            if (config('corevisys-license.logging.enabled', true)) {
+                Log::channel(config('corevisys-license.logging.channel', 'stack'))->info(
+                    'CoreVisys license: deactivation request sent.',
+                    [
+                        'product_code' => $this->productCode,
+                        'success'      => $success,
+                        'reason_code'  => $success ? 'deactivated' : 'server_rejected',
+                    ]
+                );
+            }
+        } catch (\Throwable $e) {
+            // Any failure (generic 403, 404, network, 5xx) = failure; local cache is still cleared
+            // but the message must say the server binding may remain.
+            $success = false;
+
+            if (config('corevisys-license.logging.enabled', true)) {
+                $reasonCode = ($e instanceof LicenseClientException) ? $e->errorCode() : 'network_error';
+                Log::channel(config('corevisys-license.logging.channel', 'stack'))->warning(
+                    'CoreVisys license: deactivation failed on the server. Local cache will be cleared, but the server binding may remain.',
+                    [
+                        'reason_code'  => $reasonCode,
+                        'product_code' => $this->productCode,
+                        'error'        => $e->getMessage(),
+                    ]
+                );
+            }
+        }
 
         $this->clearCache();
 
         if ($success) {
-            \Illuminate\Support\Facades\Event::dispatch(new LicenseDeactivated());
+            Event::dispatch(new LicenseDeactivated());
         }
 
         return $success;
