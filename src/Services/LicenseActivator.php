@@ -201,18 +201,9 @@ class LicenseActivator
 
             return $success;
         } catch (LicenseClientException $e) {
-            // 404 → already gone on the server side; treat as success
-            if ($e->httpStatus() === 404) {
-                $this->log('info', 'CoreVisys license: deactivate returned 404 — treating as already deactivated.', [
-                    'product_code' => $this->productCode,
-                    'reason_code'  => 'not_found_on_server',
-                ], [$licenseKey]);
-
-                return true;
-            }
-
-            // Any other error (network, 403, 5xx) → soft-fail; caller clears cache
-            $this->log('warning', 'CoreVisys license: deactivation failed — server could not be reached or rejected the request.', [
+            // Any failure (generic 403, 404, network, 5xx) = failure; local cache is still cleared
+            // but the server binding may remain.
+            $this->log('warning', 'CoreVisys license: deactivation failed on the server. Local cache will be cleared, but the server binding may remain.', [
                 'reason_code'  => $e->errorCode(),
                 'product_code' => $this->productCode,
                 'error'        => $e->getMessage(),

@@ -24,7 +24,7 @@ class LicenseDeactivateCommand extends Command
         if ($success) {
             $this->components->info('License deactivated and local cache cleared.');
         } else {
-            $this->components->warn('Could not confirm deactivation with the server, but the local cache has been cleared.');
+            $this->components->warn('Could not confirm deactivation with the server (the server binding may remain), but the local cache has been cleared.');
         }
 
         return self::SUCCESS;

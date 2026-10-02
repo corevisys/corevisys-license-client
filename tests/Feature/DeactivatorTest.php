@@ -69,7 +69,7 @@ class DeactivatorTest extends TestCase
     }
 
     #[Test]
-    public function deactivate_treats_404_as_already_deactivated_and_returns_true(): void
+    public function deactivate_returns_false_on_server_404_and_clears_cache(): void
     {
         Http::fake([
             '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
@@ -85,8 +85,34 @@ class DeactivatorTest extends TestCase
         $client = $this->app->make(LicenseClientInterface::class);
         $client->activate('VALID-KEY-1234');
 
-        // 404 → treat as already gone; caller receives true
+        // 404 is now a failure, but local cache is still cleared
+        $this->assertFalse($client->deactivate());
+        $this->assertNull($client->status());
+    }
+
+    #[Test]
+    public function deactivate_treats_409_already_deactivated_as_success(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/activate'   => Http::response($this->signedEnvelope([
+                'license_id'   => 'lic_already',
+                'status'       => 'active',
+                'product_code' => 'test-product',
+                'expires_at'   => now()->addYear()->toIso8601String(),
+            ])),
+            '*/api/v1/license/deactivate' => Http::response([
+                'status'     => false,
+                'message'    => 'License is already deactivated for this domain.',
+                'error_code' => 'already_deactivated',
+            ], 409),
+        ]);
+
+        $client = $this->app->make(LicenseClientInterface::class);
+        $client->activate('VALID-KEY-1234');
+
         $this->assertTrue($client->deactivate());
+        $this->assertNull($client->status());
     }
 
     #[Test]
