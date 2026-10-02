@@ -307,4 +307,40 @@ class CrossProductPackageTest extends TestCase
 
         $this->assertFalse($status->valid, 'Offline grace must reject record with missing product_code.');
     }
+
+    public function test_pulse_rejects_response_with_mismatched_product_code(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/pulse' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_foreign_pulse',
+                'status' => 'active',
+                'product_code' => self::FOREIGN_PRODUCT, // Mismatch!
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->pulse();
+
+        $this->assertNull($status, 'Pulse with mismatched product_code must return null.');
+    }
+
+    public function test_pulse_rejects_response_with_missing_product_code(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/pulse' => Http::response($this->signedEnvelope([
+                'license_id' => 'lic_no_prod_pulse',
+                'status' => 'active',
+                'expires_at' => now()->addYear()->toIso8601String(),
+                'checked_at' => now()->toIso8601String(),
+            ])),
+        ]);
+
+        $status = $this->app->make(LicenseClientInterface::class)->pulse();
+
+        $this->assertNull($status, 'Pulse with missing product_code must return null.');
+    }
 }
+

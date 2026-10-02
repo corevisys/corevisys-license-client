@@ -46,6 +46,10 @@ class LicenseHeartbeat
 
             $status = $response->toLicenseStatus();
 
+            if (empty($status->productCode) || $status->productCode !== $this->productCode) {
+                return null;
+            }
+
             $this->storage->put($this->productCode, [
                 'status' => $status->status,
                 'expires_at' => $status->expiresAt,
