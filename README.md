@@ -34,6 +34,28 @@ php artisan migrate
 `corevisys_license_cache` migration, and prints the `.env` variables you
 need (below).
 
+### Upgrading
+
+To upgrade the package to the latest version:
+
+```bash
+composer update corevisys/laravel-license-client
+php artisan migrate
+php artisan corevisys:license:doctor
+```
+
+If the release introduces configuration updates:
+1. Review changes against your published `config/corevisys-license.php`, or republish using:
+   ```bash
+   php artisan vendor:publish --tag=corevisys-license-config --force
+   ```
+2. Run `php artisan corevisys:license:doctor` to verify PHP/Laravel compatibility, configuration validity, and database schema status.
+3. Refresh cached license status:
+   ```bash
+   php artisan corevisys:license:check --force
+   ```
+
+
 ## 2. Environment Setup
 
 The package defaults `server_url` to CoreVisys's own hosted license server,
@@ -178,6 +200,9 @@ Behavior:
   logged as a warning.
 
 ## 6. Feature Checking
+
+> [!NOTE]
+> **Server Status Notice:** Feature gating is not active yet on the server side (the license server currently returns an empty `features: []` array in its payload). While the client-side `corevisys.feature` middleware and `CoreVisysLicense::feature()` methods are fully implemented and tested, feature checks will fail closed (deny access) until the server-side feature entitlement schema and admin management are activated in a future release. Do not rely on feature-based access controls in production until server entitlement provisioning is enabled.
 
 Gate individual features carried in the license's `features` array:
 

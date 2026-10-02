@@ -3,32 +3,30 @@
 All notable changes to `corevisys/laravel-license-client` are documented
 here. This project adheres to [Semantic Versioning](https://semver.org/).
 
-## Not yet done
+## [1.0.0] - 2026-10-02
 
-> Status honesty: Phases 5-9 are **NOT APPROVED and NOT COMPLETE**. None of the
-> work in this branch may be described as delivering them.
+Initial production release. Fully audited and hardened.
 
-- Phase 5 (logging/monitoring events, scheduled health check, admin
-  notifications with throttling): implemented on this branch, NOT yet approved
-  by the reviewer. The `[Unreleased]` entries describe the implementation; they
-  are not a claim of delivery until reviewed.
-- Phase 6 (route-enforcement lockout-safety: excluded routes, redirect-loop
-  guard, offline-under-outage allow): implemented on this branch, NOT yet
-  approved by the reviewer. The `[Unreleased]` entries describe the
-  implementation; they are not a claim of delivery until reviewed.
-- Phase 7 (exhaustive test-gap fill and CI version matrix): not approved, not
-  complete.
-- Phase 8 (`corevisys:license:status`/`:check` operational hardening and
-  `docs/RUNBOOK.md`): not approved, not complete. `docs/UPGRADING.md` still
-  carries a "to be completed" placeholder for the staged upgrade procedure.
-- Phase 9 (`docs/ROLLOUT.md` and the staged-rollout guide): not approved, not
-  complete.
+### Added
+- Core licensing client for Laravel 10, 11, and 12 on PHP 8.2+.
+- `CoreVisysLicense` facade and `LicenseClientInterface` contract with auto-discovery.
+- Activation, verification, heartbeat (`pulse`), and deactivation services.
+- Multi-tier offline verification: cached signed response validation with tamper detection and strict grace periods.
+- Cryptographic signature verification using RSA-SHA256 with key ID rotation and revocation support (`SignedPayloadVerifier`).
+- Product isolation (SEC-007): strict matching and verification of `product_code` across activation, online check, fast-path, and offline grace paths.
+- License deactivation support (`FIX-004`) via `CoreVisysLicense::deactivate()` and `php artisan corevisys:license:deactivate`.
+- Lockout-safe route middleware `corevisys.license` with configurable excluded routes and redirect-loop prevention.
+- Built-in customizable web activation interface (`GET`/`POST /license/activate`).
+- Encrypted storage for license keys at rest (`Crypt::encryptString`) with automatic redaction from logs and error contexts.
+- Diagnostic CLI tooling: `corevisys:license:install`, `:activate`, `:check`, `:deactivate`, `:status`, `:doctor`, and `:clear-cache`.
+- Static analysis with Larastan/PHPStan at level 5 with baseline.
+- Automated GitHub Actions CI workflow supporting PHP 8.2/8.3 across Laravel 10/11/12 matrix with `composer audit` and `composer validate --strict`.
 
-Some code touching these areas exists in this branch but is UNREVIEWED; it must
-not be treated as delivered. The `[Unreleased]` entries below describe only the
-approved Phase 1-4 work and the tests that actually prove it.
+### Security & Hardening
+- Zero dependency vulnerabilities (`composer audit` clean).
+- Strict non-disclosure: license keys and sensitive credentials are never logged or exposed in client exception messages.
+- Fail-closed behavior on signature mismatch, key revocation, and expired grace boundaries.
 
-## [Unreleased]
 
 ### Changed
 

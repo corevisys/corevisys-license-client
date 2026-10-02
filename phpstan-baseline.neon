@@ -1,0 +1,55 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Expression on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.expr
+			count: 1
+			path: src/Services/FingerprintGenerator.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Http\\Request\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: src/Services/LicenseActivator.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Http\\Request\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: src/Services/LicenseClient.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Http\\Request\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: src/Services/LicenseHeartbeat.php
+
+		-
+			message: '#^Expression on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.expr
+			count: 1
+			path: src/Services/LicenseVerifier.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Http\\Request\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: src/Services/LicenseVerifier.php
+
+		-
+			message: '#^Call to function is_object\(\) with Illuminate\\Foundation\\Application will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: src/Support/CompatibilityChecker.php
+
+		-
+			message: '#^Call to function method_exists\(\) with Illuminate\\Foundation\\Application and ''version'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: src/Support/CompatibilityChecker.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<\(int\|string\)\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: src/Support/ConfigValidator.php
