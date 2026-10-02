@@ -72,12 +72,40 @@ class FingerprintGenerator
             }
         }
 
-        $domain = (string) parse_url($url, PHP_URL_HOST) ?: (string) $url;
-        $domain = strtolower(trim($domain));
-        $domain = rtrim($domain, '/');
+        // Extract host only (strip scheme, port, path, query, fragment)
+        $raw = trim((string) $url);
+        if ($raw === '') {
+            return '';
+        }
 
+        if (str_contains($raw, '://')) {
+            $parsedHost = parse_url($raw, PHP_URL_HOST);
+        } elseif (str_starts_with($raw, '//')) {
+            $parsedHost = parse_url('http:' . $raw, PHP_URL_HOST);
+        } else {
+            $parsedHost = parse_url('http://' . ltrim($raw, '/'), PHP_URL_HOST);
+        }
+
+        $domain = (string) ($parsedHost ?: $raw);
+
+        // Strip residual port or path if parse_url fell back
+        if (str_contains($domain, ':')) {
+            $domain = explode(':', $domain)[0];
+        }
+        if (str_contains($domain, '/')) {
+            $domain = explode('/', $domain)[0];
+        }
+
+        $domain = strtolower(trim($domain));
+
+        // Strip ONE leading www.
         if (($this->config['strip_www'] ?? true) && str_starts_with($domain, 'www.')) {
             $domain = substr($domain, 4);
+        }
+
+        // Localhost mapping
+        if (in_array($domain, ['localhost', '127.0.0.1', '::1', '[::1]'], true)) {
+            $domain = '127.0.0.1';
         }
 
         return $domain;
