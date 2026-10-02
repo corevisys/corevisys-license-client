@@ -90,7 +90,31 @@ class ApiRequestHandler
         }
 
         if ($status === 409) {
-            throw new ActivationLimitExceededException();
+            $errorCode = $response->json('error_code');
+
+            if ($errorCode === 'activation_limit_exceeded') {
+                throw new ActivationLimitExceededException();
+            }
+
+            if ($errorCode === 'already_deactivated') {
+                return new LicenseResponse(
+                    success: true,
+                    status: 'success',
+                    message: $response->json('message') ?? 'License is already deactivated for this domain.',
+                    data: [],
+                    signature: null,
+                    keyId: null,
+                    algorithm: null,
+                    raw: $response->json() ?? [],
+                );
+            }
+
+            $message = LogSanitizer::scrubMessage(
+                $response->json('message') ?? 'The license request encountered a conflict.',
+                $secrets
+            );
+
+            throw new LicenseClientException($message, $errorCode ?? 'conflict', $status, false);
         }
 
         if (in_array($status, [401, 403, 404, 422], true) && ! $response->successful()) {
