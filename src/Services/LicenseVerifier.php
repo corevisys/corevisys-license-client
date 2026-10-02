@@ -174,6 +174,26 @@ class LicenseVerifier
     }
 
     /**
+     * Resolve the license status from the cached signed payload locally,
+     * without attempting any outbound network calls.
+     */
+    public function cachedStatus(): LicenseStatus
+    {
+        $cached = $this->storage->get($this->productCode);
+
+        if (! $cached) {
+            return LicenseStatus::invalid('not_activated');
+        }
+
+        $fastPath = $this->fastPathStatus($cached);
+        if ($fastPath !== null) {
+            return $fastPath;
+        }
+
+        return $this->fallbackToCache($cached, 'cached_status_command');
+    }
+
+    /**
      * The fast path: a cached record whose next_check_at is still in the future
      * may be trusted WITHOUT a server round trip — but only when all of the
      * following hold, otherwise the caller treats the record as due:
@@ -407,6 +427,10 @@ class LicenseVerifier
                 return LicenseStatus::invalid('grace_period_expired');
             }
 
+            if (! empty($cached['status']) && in_array($cached['status'], ['revoked', 'suspended', 'expired', 'cancelled'], true)) {
+                return LicenseStatus::invalid($cached['status']);
+            }
+
             return LicenseStatus::invalid('tampered_cache');
         }
 
@@ -534,6 +558,7 @@ class LicenseVerifier
         $record['license_id'] = $data['license_id'] ?? null;
         $record['license_type'] = $data['license_type'] ?? null;
         $record['product_code'] = $data['product_code'] ?? null;
+        $record['bound_domain'] = $data['bound_domain'] ?? null;
         $record['features'] = $this->normalizeFeatures($data['features'] ?? null);
         $record['is_grace_period'] = (bool) ($data['is_grace_period'] ?? false);
 

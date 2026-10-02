@@ -4,6 +4,7 @@ namespace CoreVisys\License\Commands;
 
 use Carbon\Carbon;
 use CoreVisys\License\Contracts\LicenseStorageInterface;
+use CoreVisys\License\Services\LicenseVerifier;
 use Illuminate\Console\Command;
 
 class LicenseStatusCommand extends Command
@@ -12,7 +13,7 @@ class LicenseStatusCommand extends Command
 
     protected $description = 'Show the cached license status without contacting the server.';
 
-    public function handle(LicenseStorageInterface $storage): int
+    public function handle(LicenseStorageInterface $storage, LicenseVerifier $verifier): int
     {
         $productCode = config('corevisys-license.product_code');
         $record = $storage->get($productCode);
@@ -23,8 +24,10 @@ class LicenseStatusCommand extends Command
             return self::FAILURE;
         }
 
-        $status = $record['status'] ?? 'unknown';
-        $isActive = $status === 'active';
+        $licenseStatus = $verifier->cachedStatus();
+
+        $status = $licenseStatus->status;
+        $isActive = $licenseStatus->valid && $licenseStatus->isActive();
         $gracePeriodHours = (int) config('corevisys-license.grace_period', 72);
         $lastCheck = $record['last_successful_check_at'] ?? null;
         $graceExpiresAt = ($isActive && $lastCheck) ? Carbon::parse($lastCheck)->addHours($gracePeriodHours) : null;
@@ -34,9 +37,9 @@ class LicenseStatusCommand extends Command
             ['Field', 'Value'],
             [
                 ['Status', $status],
-                ['Type', $record['license_type'] ?? '—'],
-                ['Domain', $record['bound_domain'] ?? '—'],
-                ['Expires At', $record['expires_at'] ?? 'never'],
+                ['Type', $licenseStatus->licenseType ?? '—'],
+                ['Domain', $licenseStatus->boundDomain ?? '—'],
+                ['Expires At', $licenseStatus->expiresAt ? $licenseStatus->expiresAt->toDateTimeString() : 'never'],
                 ['Last Checked', $record['last_checked_at'] ?? '—'],
                 ['Next Check', $record['next_check_at'] ?? '—'],
                 ['Offline Grace Until', $graceExpiresAt?->toDateTimeString() ?? '—'],
