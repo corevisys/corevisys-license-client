@@ -66,13 +66,46 @@ class ArtisanCommandsTest extends TestCase
 
     public function test_status_command_shows_cached_status(): void
     {
+        // The status command uses cachedStatus() which requires a verified
+        // signed payload — seed a properly signed record so signature
+        // verification succeeds and the command exits 0.
+        $data = [
+            'license_id'         => 'lic_status_cmd',
+            'status'             => 'active',
+            'product_code'       => 'test-product',
+            'license_type'       => 'subscription',
+            'bound_domain'       => 'license.test',
+            'expires_at'         => now()->addYear()->toIso8601String(),
+            'issued_at'          => now()->subMinute()->toIso8601String(),
+            'offline_valid_until' => now()->addDays(7)->toIso8601String(),
+            'features'           => [],
+            'is_grace_period'    => false,
+        ];
+
+        $envelope = $this->signedEnvelope($data);
+
         /** @var LicenseStorageInterface $storage */
         $storage = $this->app->make(LicenseStorageInterface::class);
+        $storage->putPublicKey('test-key-1', $this->keyPair()['public'], 86400);
+        $storage->putPublicKeyMetadata([
+            'available_keys'  => [['key_id' => 'test-key-1', 'public_key' => $this->keyPair()['public']]],
+            'revoked_key_ids' => [],
+        ], 86400);
         $storage->put('test-product', [
-            'status' => 'active',
-            'license_type' => 'subscription',
-            'bound_domain' => 'license.test',
-            'last_successful_check_at' => now(),
+            'license_id'              => $data['license_id'],
+            'license_key'             => 'STATUS-CMD-KEY',
+            'status'                  => $data['status'],
+            'license_type'            => $data['license_type'],
+            'bound_domain'            => $data['bound_domain'],
+            'signed_payload'          => json_encode($data, JSON_UNESCAPED_SLASHES),
+            'signature'               => $envelope['signature'],
+            'key_id'                  => 'test-key-1',
+            'expires_at'              => $data['expires_at'],
+            'issued_at'               => $data['issued_at'],
+            'offline_valid_until'     => $data['offline_valid_until'],
+            'is_grace_period'         => $data['is_grace_period'],
+            'last_successful_check_at' => now()->subHours(2),
+            'next_check_at'           => now()->addHour(), // not yet due
         ]);
 
         $this->artisan('corevisys:license:status')

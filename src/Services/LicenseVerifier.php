@@ -427,7 +427,13 @@ class LicenseVerifier
                 return LicenseStatus::invalid('grace_period_expired');
             }
 
-            if (! empty($cached['status']) && in_array($cached['status'], ['revoked', 'suspended', 'expired', 'cancelled'], true)) {
+            // Only fall back to the unsigned column when there was no signed
+            // payload at all (e.g. cleared by a server-authoritative rejection).
+            // If a signed_payload IS present but fails signature verification,
+            // that is a tampered cache — never trust the unsigned column in
+            // that case, as it could be hand-edited to mask the tamper.
+            $hasSignedPayload = ! empty($cached['signed_payload']);
+            if (! $hasSignedPayload && ! empty($cached['status']) && in_array($cached['status'], ['revoked', 'suspended', 'expired', 'cancelled'], true)) {
                 return LicenseStatus::invalid($cached['status']);
             }
 
