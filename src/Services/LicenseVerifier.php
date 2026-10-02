@@ -391,7 +391,17 @@ class LicenseVerifier
             // unsigned columns: a still-verifiable signed payload whose windows
             // have closed is a lapsed grace/offline window; anything else is a
             // tampered or unverifiable cache.
-            if ($this->verifiedSignedPayload($cached) !== null) {
+            $verifiedData = $this->verifiedSignedPayload($cached);
+            if ($verifiedData !== null) {
+                // If the signed payload carries a terminal non-active status
+                // (suspended, revoked, expired, cancelled, …), report that
+                // status rather than the misleading 'grace_period_expired'.
+                // The offline window is only ever open for an active license.
+                $signedStatus = (string) ($verifiedData['status'] ?? 'unknown');
+                if ($signedStatus !== 'active') {
+                    return LicenseStatus::invalid($signedStatus);
+                }
+
                 $this->log('warning', 'CoreVisys license: offline grace window has expired.', null, $this->recordContext($cached, 'grace_period_expired'));
 
                 return LicenseStatus::invalid('grace_period_expired');
