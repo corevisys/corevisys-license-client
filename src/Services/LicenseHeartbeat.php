@@ -50,25 +50,46 @@ class LicenseHeartbeat
                 return null;
             }
 
+            $isActive = $status->status === 'active';
+            $offlineUntil = $isActive ? $status->offlineValidUntil : null;
+            $lastSuccessfulCheck = $isActive ? now() : null;
+
             $this->storage->put($this->productCode, [
                 'status' => $status->status,
                 'expires_at' => $status->expiresAt,
                 'grace_expires_at' => $status->graceExpiresAt,
                 'issued_at' => $status->issuedAt,
-                'offline_valid_until' => $status->offlineValidUntil,
+                'offline_valid_until' => $offlineUntil,
                 'is_grace_period' => $status->isGracePeriod,
                 'features' => $status->features,
                 'signed_payload' => $response->canonicalDataJson(),
                 'signature' => $response->signature,
                 'key_id' => $response->keyId,
-                'last_successful_check_at' => now(),
+                'last_successful_check_at' => $lastSuccessfulCheck,
             ]);
 
             return $status;
-        } catch (LicenseClientException) {
-            // Heartbeats are best-effort; the next scheduled check() call
-            // is responsible for actually invalidating a bad license.
-            return null;
+        } catch (LicenseClientException $e) {
+            $refusedStatus = match (true) {
+                stripos($e->getMessage(), 'suspended') !== false || $e->errorCode() === 'license_suspended' => 'suspended',
+                stripos($e->getMessage(), 'expired') !== false || $e->errorCode() === 'license_expired' => 'expired',
+                stripos($e->getMessage(), 'revoked') !== false || $e->errorCode() === 'license_revoked' || $e->errorCode() === 'invalid_license_key' => 'revoked',
+                default => $e->errorCode() ?: 'request_rejected',
+            };
+
+            $this->storage->put($this->productCode, [
+                'status' => $refusedStatus,
+                'signed_payload' => null,
+                'signature' => null,
+                'key_id' => null,
+                'offline_valid_until' => null,
+                'last_successful_check_at' => null,
+                'next_check_at' => now(),
+                'last_error_at' => now(),
+                'last_error_message' => \CoreVisys\License\Support\LogSanitizer::scrubMessage($e->getMessage(), [$licenseKey]),
+            ]);
+
+            return LicenseStatus::invalid($refusedStatus);
         }
     }
 }

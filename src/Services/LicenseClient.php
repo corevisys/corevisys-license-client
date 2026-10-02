@@ -60,7 +60,12 @@ class LicenseClient implements LicenseClientInterface
 
     public function pulse(): ?LicenseStatus
     {
-        return $this->heartbeat->send($this->licenseKey());
+        $status = $this->heartbeat->send($this->licenseKey());
+        if ($status !== null) {
+            $this->resolvedStatus = $status;
+        }
+
+        return $status;
     }
 
     public function isValid(): bool

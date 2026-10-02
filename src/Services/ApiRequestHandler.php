@@ -126,7 +126,9 @@ class ApiRequestHandler
                 $secrets
             );
 
-            throw new LicenseClientException($message, 'request_rejected', $status, false);
+            $errorCode = $response->json('error_code');
+
+            throw new LicenseClientException($message, $errorCode ?: 'request_rejected', $status, false);
         }
 
         if (! $response->successful()) {

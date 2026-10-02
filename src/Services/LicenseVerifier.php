@@ -143,20 +143,33 @@ class LicenseVerifier
             return LicenseStatus::invalid('signature_verification_failed');
         } catch (\CoreVisys\License\Exceptions\LicenseClientException $e) {
             // A definitive rejection from the server (401/403/404/422/409,
-            // e.g. domain mismatch or an activation-limit conflict) is fresh,
+            // e.g. domain mismatch, revoked, suspended or expired) is fresh,
             // authoritative "no" — it must never be masked by falling back
-            // to a previously cached "yes". check() never throws outward;
-            // callers always get a LicenseStatus and can inspect ->status.
+            // to a previously cached "yes". Invalidate cache immediately.
+            $refusedStatus = match (true) {
+                stripos($e->getMessage(), 'suspended') !== false || $e->errorCode() === 'license_suspended' => 'suspended',
+                stripos($e->getMessage(), 'expired') !== false || $e->errorCode() === 'license_expired' => 'expired',
+                stripos($e->getMessage(), 'revoked') !== false || $e->errorCode() === 'license_revoked' || $e->errorCode() === 'invalid_license_key' => 'revoked',
+                default => $e->errorCode(),
+            };
+
             $this->log('warning', 'CoreVisys license: check request rejected.', $e, [
                 'reason_code' => $e->errorCode(),
             ], [$licenseKey]);
             $this->storage->put($this->productCode, [
+                'status' => $refusedStatus,
+                'signed_payload' => null,
+                'signature' => null,
+                'key_id' => null,
+                'offline_valid_until' => null,
+                'last_successful_check_at' => null,
+                'next_check_at' => now(),
                 'last_error_at' => now(),
                 'last_error_message' => LogSanitizer::scrubMessage($e->getMessage(), [$licenseKey]),
             ]);
             Event::dispatch(new LicenseCheckFailed(null, ['reason' => $e->errorCode()]));
 
-            return LicenseStatus::invalid($e->errorCode());
+            return LicenseStatus::invalid($refusedStatus);
         }
     }
 
@@ -326,6 +339,10 @@ class LicenseVerifier
             Event::dispatch(new LicenseFingerprintChanged($status));
         }
 
+        $isActive = $status->status === 'active';
+        $offlineUntil = $isActive ? $status->offlineValidUntil : null;
+        $lastSuccessfulCheck = $isActive ? now() : null;
+
         $this->storage->put($this->productCode, [
             'license_id' => $status->licenseId,
             'status' => $status->status,
@@ -335,13 +352,13 @@ class LicenseVerifier
             'expires_at' => $status->expiresAt,
             'grace_expires_at' => $status->graceExpiresAt,
             'issued_at' => $status->issuedAt,
-            'offline_valid_until' => $status->offlineValidUntil,
+            'offline_valid_until' => $offlineUntil,
             'is_grace_period' => $status->isGracePeriod,
             'features' => $status->features,
             'signed_payload' => $response->canonicalDataJson(),
             'signature' => $response->signature,
             'key_id' => $response->keyId,
-            'last_successful_check_at' => now(),
+            'last_successful_check_at' => $lastSuccessfulCheck,
             'next_check_at' => now()->addSeconds((int) $this->config['check_interval'] ?? 86400),
             'last_error_at' => null,
             'last_error_message' => null,
@@ -434,6 +451,11 @@ class LicenseVerifier
 
         // SEC-007: Missing or mismatched product code fails offline grace trust
         if (empty($data['product_code']) || $data['product_code'] !== $this->productCode) {
+            return null;
+        }
+
+        // Non-active status (revoked, suspended, expired) must never be granted offline grace
+        if (($data['status'] ?? null) !== 'active') {
             return null;
         }
 

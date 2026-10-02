@@ -23,25 +23,28 @@ class LicenseStatusCommand extends Command
             return self::FAILURE;
         }
 
+        $status = $record['status'] ?? 'unknown';
+        $isActive = $status === 'active';
         $gracePeriodHours = (int) config('corevisys-license.grace_period', 72);
         $lastCheck = $record['last_successful_check_at'] ?? null;
-        $graceExpiresAt = $lastCheck ? Carbon::parse($lastCheck)->addHours($gracePeriodHours) : null;
+        $graceExpiresAt = ($isActive && $lastCheck) ? Carbon::parse($lastCheck)->addHours($gracePeriodHours) : null;
+        $inGrace = $isActive && $graceExpiresAt && $graceExpiresAt->isFuture();
 
         $this->table(
             ['Field', 'Value'],
             [
-                ['Status', $record['status'] ?? 'unknown'],
+                ['Status', $status],
                 ['Type', $record['license_type'] ?? '—'],
                 ['Domain', $record['bound_domain'] ?? '—'],
                 ['Expires At', $record['expires_at'] ?? 'never'],
                 ['Last Checked', $record['last_checked_at'] ?? '—'],
                 ['Next Check', $record['next_check_at'] ?? '—'],
                 ['Offline Grace Until', $graceExpiresAt?->toDateTimeString() ?? '—'],
-                ['In Grace Window', $graceExpiresAt?->isFuture() ? 'yes' : 'no'],
+                ['In Grace Window', $inGrace ? 'yes' : 'no'],
                 ['Last Error', $record['last_error_message'] ?? '—'],
             ]
         );
 
-        return self::SUCCESS;
+        return $isActive ? self::SUCCESS : self::FAILURE;
     }
 }
