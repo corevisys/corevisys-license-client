@@ -94,7 +94,11 @@ class LicenseActivationTest extends TestCase
     public function test_activation_limit_exceeded_returns_failure(): void
     {
         Http::fake([
-            '*/api/v1/license/activate' => Http::response(['message' => 'Activation limit exceeded.'], 409),
+            '*/api/v1/license/activate' => Http::response([
+                'status'     => false,
+                'message'    => 'Activation limit exceeded.',
+                'error_code' => 'activation_limit_exceeded',
+            ], 409),
         ]);
 
         $result = $this->app->make(LicenseClientInterface::class)->activate('OVER-LIMIT-KEY');
