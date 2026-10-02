@@ -205,4 +205,28 @@ class DeactivatorTest extends TestCase
         Http::assertNothingSent();
         $this->assertTrue($result);
     }
+
+    #[Test]
+    public function deactivate_command_warns_that_server_binding_may_remain_on_failure(): void
+    {
+        Http::fake([
+            '*/api/v1/license/public-key' => Http::response($this->publicKeyResponse()),
+            '*/api/v1/license/activate'   => Http::response($this->signedEnvelope([
+                'license_id'   => 'lic_cmd_fail',
+                'status'       => 'active',
+                'product_code' => 'test-product',
+                'expires_at'   => now()->addYear()->toIso8601String(),
+            ])),
+            '*/api/v1/license/deactivate' => Http::response(['message' => 'Forbidden'], 403),
+        ]);
+
+        $client = $this->app->make(LicenseClientInterface::class);
+        $client->activate('VALID-KEY-1234');
+
+        $this->artisan('corevisys:license:deactivate', ['--force' => true])
+            ->expectsOutputToContain('the server binding may remain')
+            ->assertSuccessful();
+
+        $this->assertNull($client->status());
+    }
 }
