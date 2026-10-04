@@ -31,6 +31,7 @@
         "ext-json": "*"
     },
     "require-dev": {
+        "guzzlehttp/guzzle": "^7.8",
         "larastan/larastan": "^3.12",
         "orchestra/testbench": "^8.0|^9.0|^10.0",
         "phpunit/phpunit": "^10.0|^11.0"
