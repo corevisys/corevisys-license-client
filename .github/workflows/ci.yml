@@ -41,6 +41,10 @@ jobs:
         run: |
           composer require "orchestra/testbench:${{ matrix.testbench }}" "illuminate/support:${{ matrix.laravel }}" "illuminate/http:${{ matrix.laravel }}" "illuminate/database:${{ matrix.laravel }}" "illuminate/console:${{ matrix.laravel }}" --no-interaction --no-update
 
+      - name: Select Laravel 10-compatible static analyzer
+        if: matrix.laravel == '10.*'
+        run: composer require "larastan/larastan:^2.9" --dev --no-interaction --no-update
+
       - name: Allow legacy framework versions for compatibility tests
         if: matrix.laravel != '12.*'
         run: composer config audit.block-insecure false
