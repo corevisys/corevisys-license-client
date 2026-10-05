@@ -57,6 +57,11 @@ jobs:
         run: composer audit
 
       - name: Run static analysis (PHPStan / Larastan)
+        if: matrix.laravel == '10.*'
+        run: vendor/bin/phpstan analyse --configuration=phpstan-laravel10.neon --no-progress
+
+      - name: Run static analysis (PHPStan / Larastan)
+        if: matrix.laravel != '10.*'
         run: vendor/bin/phpstan analyse --no-progress
 
       - name: Run test suite
