@@ -106,7 +106,7 @@ class FastPathEntitlementTest extends TestCase
     public function test_fast_path_signed_features_win_over_unsigned_column(): void
     {
         $this->seedNotDueRecord(
-            ['features' => ['a']],
+            ['features' => ['a', 'Reports']],
             ['features' => ['a', 'b', 'c']],
         );
 
@@ -116,9 +116,11 @@ class FastPathEntitlementTest extends TestCase
 
         $this->assertTrue($status->valid);
         $this->assertTrue($status->hasFeature('a'));
+        $this->assertTrue($status->hasFeature('Reports'));
+        $this->assertFalse($status->hasFeature('reports'), 'Feature names must match exactly, including case.');
         $this->assertFalse($status->hasFeature('b'), 'A feature absent from the signed payload must not be granted.');
         $this->assertFalse($status->hasFeature('c'), 'Signed features must override the unsigned column entirely.');
-        $this->assertSame(['a'], $status->features);
+        $this->assertSame(['a', 'Reports'], $status->features);
     }
 
     public function test_fast_path_signed_license_type_and_id_win_over_unsigned_columns(): void

@@ -202,7 +202,10 @@ Behavior:
 ## 6. Feature Checking
 
 > [!NOTE]
-> **Server Status Notice:** Feature gating is not active yet on the server side (the license server currently returns an empty `features: []` array in its payload). While the client-side `corevisys.feature` middleware and `CoreVisysLicense::feature()` methods are fully implemented and tested, feature checks will fail closed (deny access) until the server-side feature entitlement schema and admin management are activated in a future release. Do not rely on feature-based access controls in production until server entitlement provisioning is enabled.
+Feature entitlements are stored per license and returned in the server's
+signed `features` array. An empty list grants no feature. Administrators assign
+exact feature names on the server's license detail page; names are
+case-sensitive and must match the application's middleware identifier exactly.
 
 Gate individual features carried in the license's `features` array:
 
@@ -212,7 +215,11 @@ Route::middleware('corevisys.feature:reports')->group(function () {
 });
 ```
 
-Denied access fires a `LicenseFeatureDenied` event before returning `403`.
+`CoreVisysLicense::feature('reports')` performs the same exact-name check, and
+`CoreVisysLicense::features()` returns the signed list. Denied access fires a
+`LicenseFeatureDenied` event before returning `403`. If no feature was
+provisioned by an administrator, feature-gated routes remain denied (fail
+closed).
 
 ## 7. Scheduled Verification
 
