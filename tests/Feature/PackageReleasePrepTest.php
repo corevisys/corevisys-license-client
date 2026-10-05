@@ -34,7 +34,7 @@ class PackageReleasePrepTest extends TestCase
         $this->assertSame('1.0.0', config('corevisys-license.client_version'));
     }
 
-    public function test_readme_contains_real_install_upgrade_and_feature_gating_notice(): void
+    public function test_readme_documents_installation_and_feature_entitlements(): void
     {
         $readmePath = dirname(__DIR__, 2) . '/README.md';
         $this->assertFileExists($readmePath);
@@ -42,7 +42,8 @@ class PackageReleasePrepTest extends TestCase
 
         $this->assertStringContainsString('corevisys:license:install', $content);
         $this->assertStringContainsString('corevisys:license:doctor', $content);
-        $this->assertStringContainsString('Feature gating is not active yet on the server side', $content);
+        $this->assertStringContainsString('Feature entitlements are stored per license', $content);
+        $this->assertStringContainsString('An empty list grants no feature.', $content);
     }
 
     public function test_ci_workflow_exists_and_contains_no_secrets(): void
