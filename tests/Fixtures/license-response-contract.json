@@ -1,0 +1,4 @@
+{
+  "envelope": ["success", "status", "message", "data", "signature", "key_id", "algorithm"],
+  "data": ["status", "license_id", "product_code", "license_type", "expires_at", "features", "issued_at", "offline_valid_until", "is_grace_period"]
+}
